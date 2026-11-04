@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><h1>渠道投诉通知配置</h1><p>{{ channel.name }} · {{ channel.mch_id }}；该账号下的商户共用通知地址。</p></div><a class="button" href="{% url 'channel_list' %}">返回渠道列表</a></div>
+<div class="panel form-panel narrow">
+  <p class="config-help">先查询微信当前配置，核对现有地址用途，再创建、更新或删除。保存渠道资料不会自动注册通知。</p>
+  <p class="config-help">本系统接收路径：<span class="mono">{{ channel.callback_path }}</span></p>
+  {% if remote != None %}<div class="remote-result"><b>微信当前配置</b><p>{{ remote.url|default:'未配置通知地址' }}</p></div>{% endif %}
+  <form method="post">{% csrf_token %}{{ form.non_field_errors }}
+    {% for field in form %}{% if field.is_hidden %}{{ field }}{% else %}{% include 'desk/config_field.html' %}{% endif %}{% endfor %}
+    <div class="form-actions"><button class="primary">执行配置操作</button></div>
+  </form>
+</div>
+<section class="panel channel-jobs"><h2>最近通知任务</h2>
+  {% for job in jobs %}<div class="channel-job"><span>{{ job.created_at|date:'m-d H:i:s' }} · {{ job.state }}{% if job.error %}<small>{{ job.error }}</small>{% endif %}</span>
+    {% if job.state == 'failed' and perms.desk.sync_complaint %}<form action="{% url 'retry_channel_job' channel.id job.id %}" method="post">{% csrf_token %}<button class="button">重试</button></form>{% endif %}</div>
+  {% empty %}<p class="config-help">尚未收到渠道投诉通知。</p>{% endfor %}
+</section>
+{% endblock %}

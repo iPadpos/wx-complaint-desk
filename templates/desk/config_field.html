@@ -1,0 +1,4 @@
+<div class="field {% if field.widget_type == 'checkbox' %}checkbox-field{% endif %}">
+  {% if field.widget_type == 'checkbox' %}{{ field }}{{ field.label_tag }}{% else %}{{ field.label_tag }}{{ field }}{% endif %}
+  {{ field.errors }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+</div>

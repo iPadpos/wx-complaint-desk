@@ -1,0 +1,13 @@
+{
+  "SECRET_KEY": "请生成至少48字节随机值",
+  "DATA_KEY": "请使用 cryptography.fernet.Fernet.generate_key 生成并备份",
+  "DEBUG": "false",
+  "ALLOWED_HOSTS": "complaints.example.com",
+  "CSRF_TRUSTED_ORIGINS": "https://complaints.example.com",
+  "CHANNEL_CREDENTIAL_ROOT": "/run/complaint/channel-credentials",
+  "DB_HOST": "127.0.0.1",
+  "DB_PORT": "3306",
+  "DB_NAME": "complaint_desk",
+  "DB_USER": "complaint_app",
+  "DB_PASSWORD": "请填写独立数据库用户密码"
+}

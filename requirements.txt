@@ -1,0 +1,6 @@
+Django==5.2.17
+mysqlclient==2.3.0
+httpx==0.28.1
+cryptography==48.0.1
+Pillow==12.3.0
+gunicorn==23.0.0

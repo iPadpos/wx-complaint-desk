@@ -1,0 +1,33 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('', views.workspace, name='home'),
+    path('merchants/', views.merchant_list, name='merchant_list'),
+    path('merchants/new/', views.merchant_edit, name='merchant_new'),
+    path('channels/', views.channel_list, name='channel_list'),
+    path('channels/new/', views.channel_edit, name='channel_new'),
+    path('channels/<int:channel_id>/edit/', views.channel_edit, name='channel_edit'),
+    path('channels/<int:channel_id>/delete/', views.channel_delete, name='channel_delete'),
+    path('channels/<int:channel_id>/notifications/', views.channel_notifications, name='channel_notifications'),
+    path('channels/<int:channel_id>/jobs/<int:job_id>/retry/', views.retry_channel_job, name='retry_channel_job'),
+    path('merchants/<int:merchant_id>/', views.workspace, name='workspace'),
+    path('merchants/<int:merchant_id>/edit/', views.merchant_edit, name='merchant_edit'),
+    path('merchants/<int:merchant_id>/delete/', views.merchant_delete, name='merchant_delete'),
+    path('merchants/<int:merchant_id>/sync/', views.sync, name='sync'),
+    path('merchants/<int:merchant_id>/jobs/<int:job_id>/retry/', views.retry_job, name='retry_job'),
+    path('merchants/<int:merchant_id>/notifications/', views.notifications, name='notifications'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/', views.complaint_detail, name='complaint_detail'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/sync/', views.sync, name='sync_one'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/reply/', views.reply, name='reply'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/complete/', views.complete, name='complete'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/refund/', views.refund, name='refund'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/immediate/', views.immediate, name='immediate'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/upload/', views.upload, name='upload'),
+    path('merchants/<int:merchant_id>/complaints/<int:complaint_pk>/image/', views.image, name='image'),
+    path('operations/', views.operations, name='operations'),
+    path('operations/<uuid:operation_id>/resolve/', views.resolve_operation, name='resolve'),
+    path('callbacks/<str:mch_id>/', views.callback, name='callback'),
+    path('callbacks/channels/<str:mch_id>/', views.channel_callback, name='channel_callback'),
+    path('health/', views.health, name='health'),
+]

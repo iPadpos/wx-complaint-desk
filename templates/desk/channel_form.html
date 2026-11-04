@@ -1,0 +1,14 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><h1>{{ title }}</h1><p>填写微信渠道账号的凭据，关联商户共用此配置。</p></div><a href="{% url 'channel_list' %}" class="button">返回渠道列表</a></div>
+<section class="panel form-panel channel-config credential-config"><form method="post" enctype="multipart/form-data">{% csrf_token %}
+  {% if form.errors %}<div class="message error" role="alert">保存未成功，请检查下方标记的字段。上传文件和新输入的密钥不会回显，请在需要时重新选择或输入。</div>{% endif %}
+  {{ form.non_field_errors }}
+  <section class="config-section">
+    <h2>账号信息</h2>
+    <div class="form-grid">{% for field in form.basic_fields %}{% include 'desk/config_field.html' %}{% endfor %}</div>
+  </section>
+  {% include 'desk/credential_configuration.html' with credential_account=channel %}
+  <div class="form-actions"><a href="{% url 'channel_list' %}" class="button">取消</a><button class="primary">保存渠道账号</button></div>
+</form></section>
+{% endblock %}

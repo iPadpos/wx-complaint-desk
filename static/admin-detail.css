@@ -1,0 +1,20 @@
+/* 沿用原生后台布局，让长编号和只读内容在字段内完整换行。 */
+#content h2,
+.breadcrumbs,
+.aligned .readonly {
+    overflow-wrap: anywhere;
+}
+
+.aligned .readonly {
+    flex: 1;
+    min-width: 0;
+}
+
+/* 长标题换行后，历史按钮使用自己的行，避免覆盖标题。 */
+#content .object-tools {
+    display: flex;
+    justify-content: flex-end;
+    float: none;
+    margin: 0 0 15px;
+    padding: 0;
+}

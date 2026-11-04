@@ -1,0 +1,15 @@
+.git
+.venv
+.runtime
+.local
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+__pycache__
+*.pyc
+staticfiles
+任务记录
+evidence

@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><h1>{{ title }}</h1><a href="{% url 'merchant_list' %}" class="button">返回列表</a></div>
+<section class="panel form-panel merchant-config credential-config">
+  <form method="post" enctype="multipart/form-data" data-merchant-config>{% csrf_token %}
+    {% if form.errors %}<div class="message error" role="alert">保存未成功，请检查下方标记的字段。上传文件和新输入的密钥不会回显，请在需要时重新选择或输入。</div>{% endif %}
+    {{ form.non_field_errors }}
+    <section class="config-section">
+      <h2>商户信息</h2>
+      <div class="form-grid">{% for field in form.basic_fields %}{% include 'desk/config_field.html' %}{% endfor %}</div>
+    </section>
+    <section class="config-section" data-channel-fields {% if not form.is_channel_mode %}hidden{% endif %}>
+      <h2>关联渠道账号</h2>
+      <p class="config-help">使用所选渠道账号的调用凭据和投诉通知配置。</p>
+      <div class="form-grid">
+        {% include 'desk/config_field.html' with field=form.channel %}
+        {% include 'desk/config_field.html' with field=form.provider_merchant_id %}
+      </div>
+      {% if perms.desk.add_wechatchannel %}<p class="config-help"><a href="{% url 'channel_new' %}" target="_blank" rel="noopener">新增渠道账号 ↗</a>，保存后刷新本页即可选择。</p>{% endif %}
+    </section>
+    <section class="config-section" data-direct-credentials {% if form.is_channel_mode %}hidden{% endif %}>
+      {% include 'desk/credential_configuration.html' with credential_account=merchant %}
+    </section>
+    <section class="config-section">
+      <h2>其他配置</h2>
+      <div class="form-grid">
+        {% include 'desk/config_field.html' with field=form.allowed_jump_hosts %}
+      </div>
+    </section>
+    <div class="form-actions"><a href="{% url 'merchant_list' %}" class="button">取消</a><button class="primary">保存商户</button></div>
+  </form>
+</section>
+{% endblock %}

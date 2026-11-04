@@ -1,0 +1,15 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><h1>渠道账号</h1><p>统一管理微信渠道调用凭据，供关联商户使用。</p></div>{% if perms.desk.add_wechatchannel %}<a class="primary" href="{% url 'channel_new' %}">＋ 新增渠道账号</a>{% endif %}</div>
+{% include 'desk/management_tabs.html' %}
+<form class="searchbar" method="get"><input name="q" value="{{ query }}" placeholder="渠道名称、微信渠道号或支付机构" aria-label="查找渠道账号"><button class="button">查询</button></form>
+<div class="panel table-wrap"><table>
+  <thead><tr><th>渠道账号</th><th>支付机构</th><th>微信渠道号</th><th>关联商户</th><th>APIv3 密钥</th><th>状态</th><th>操作</th></tr></thead>
+  <tbody>{% for row in rows %}<tr>
+    <td><b>{{ row.name }}</b></td><td>{{ row.provider|default:'—' }}</td><td class="mono">{{ row.mch_id }}</td><td>{{ row.merchant_count }}</td>
+    <td>{% if row.api_v3_key %}<span class="badge processed">已保存</span>{% else %}<span class="muted">未配置</span>{% endif %}</td>
+    <td>{% if row.enabled %}<span class="status-dot"></span> 已启用{% else %}<span class="muted">已停用</span>{% endif %}</td>
+    <td class="table-actions">{% if perms.desk.configure_notification %}<a href="{% url 'channel_notifications' row.id %}">通知配置</a>{% endif %}{% if perms.desk.change_wechatchannel %}<a href="{% url 'channel_edit' row.id %}">编辑</a>{% endif %}{% if perms.desk.delete_wechatchannel %}<a class="danger-text" href="{% url 'channel_delete' row.id %}">删除</a>{% endif %}</td>
+  </tr>{% empty %}<tr><td colspan="7" class="empty">暂无渠道账号。添加后，可在新增商户时选择关联。</td></tr>{% endfor %}</tbody>
+</table></div>
+{% endblock %}

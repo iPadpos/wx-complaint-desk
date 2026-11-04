@@ -1,0 +1,4 @@
+<nav class="management-tabs" aria-label="商户与渠道管理">
+  {% if perms.desk.view_merchant %}<a href="{% url 'merchant_list' %}" {% if not channel_tab %}class="active" aria-current="page"{% endif %}>商户列表</a>{% endif %}
+  {% if perms.desk.view_wechatchannel %}<a href="{% url 'channel_list' %}" {% if channel_tab %}class="active" aria-current="page"{% endif %}>渠道账号</a>{% endif %}
+</nav>

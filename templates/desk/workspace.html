@@ -1,0 +1,34 @@
+{% extends 'base.html' %}{% load desk_tags %}{% block content %}
+{% if merchant %}<div class="page-heading"><div><h1>{{ merchant.name }} <span class="badge neutral">{{ merchant.mch_id }}</span>{% if merchant.is_demo %}<span class="badge amber">演示商户</span>{% endif %}</h1></div><div class="heading-actions">{% if perms.desk.configure_notification %}<a class="button" href="{% url 'notifications' merchant.id %}">通知配置</a>{% endif %}{% if perms.desk.sync_complaint %}<button class="primary" type="button" data-toggle="sync-panel"><svg><use href="#i-sync"/></svg>同步微信投诉</button>{% endif %}</div></div>
+
+{% if not merchant.enabled %}<div class="notice">定时同步已关闭</div>{% endif %}
+{% if errors %}<div class="notice amber"><b>商户尚未就绪</b> {{ errors|join:'；' }}。{% if perms.desk.change_merchant %}<a href="{% url 'merchant_edit' merchant.id %}">完善配置 →</a>{% endif %}</div>{% endif %}
+<section id="sync-panel" class="panel sync-panel" hidden><h3>同步指定日期的投诉</h3><form method="post" action="{% url 'sync' merchant.id %}">{% csrf_token %}<div class="inline-form">{% for field in sync_form %}<div class="field">{{ field.label_tag }}{{ field }}</div>{% endfor %}<button class="primary">提交同步任务</button></div></form></section>
+<div class="stats"><div class="stat"><span>全部投诉</span><strong data-stat="total">{{ stats.total }}</strong></div><div class="stat important"><span>待处理</span><strong data-stat="pending">{{ stats.pending }}</strong></div><div class="stat"><span>处理中</span><strong data-stat="processing">{{ stats.processing }}</strong></div><div class="stat"><span>用户新留言</span><strong data-stat="incoming">{{ stats.incoming }}</strong></div></div>
+<form class="filter-panel panel" method="get"><div class="filters"><input type="search" name="q" value="{{ query }}" aria-label="搜索投诉或订单" placeholder="搜索投诉单号 / 商户订单号"><select name="state" aria-label="投诉状态"><option value="">全部状态</option>{% for value,label in states %}<option value="{{ value }}" {% if request.GET.state == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select><select name="problem" aria-label="问题类型"><option value="">全部问题类型</option><option value="REFUND" {% if request.GET.problem == 'REFUND' %}selected{% endif %}>申请退款</option><option value="SERVICE_NOT_WORK" {% if request.GET.problem == 'SERVICE_NOT_WORK' %}selected{% endif %}>权益未生效</option><option value="OTHERS" {% if request.GET.problem == 'OTHERS' %}selected{% endif %}>其他问题</option></select><label class="check"><input type="checkbox" name="incoming" value="1" {% if request.GET.incoming == '1' %}checked{% endif %}>有新留言</label><button class="button">筛选</button><a class="text-button" href="{% url 'workspace' merchant.id %}">重置</a><button type="button" class="text-button" data-toggle="date-filters">日期 ▾</button></div><div id="date-filters" class="date-filters" {% if not request.GET.begin and not request.GET.end %}hidden{% endif %}><label>投诉开始 <input type="date" name="begin" value="{{ request.GET.begin }}"></label><label>投诉结束 <input type="date" name="end" value="{{ request.GET.end }}"></label></div></form>
+<section class="complaint-list panel">
+  <div class="panel-heading"><h2>投诉列表 <span>{{ page.paginator.count }}</span></h2></div>
+  <div class="table-wrap">
+    <table class="complaint-table">
+      <thead><tr><th>投诉内容</th><th>投诉单号 / 商户订单号</th><th>状态</th><th>投诉时间</th><th>操作</th></tr></thead>
+      <tbody>{% for complaint in page %}
+        <tr class="complaint-row" data-complaint-id="{{ complaint.pk }}" data-detail-url="{% url 'complaint_detail' merchant.id complaint.pk %}?dialog=1">
+          <td><a class="complaint-title" href="{% url 'complaint_detail' merchant.id complaint.pk %}" data-open-complaint>{{ complaint.detail.problem_description|default:complaint.problem_type|default:'客户投诉' }}</a><p class="complaint-preview">{{ complaint.detail.complaint_detail|truncatechars:65 }}</p></td>
+          <td><span class="mono">{{ complaint.complaint_id }}</span><small class="mono">{{ complaint.order_no|default:'未提供订单号' }}</small></td>
+          <td><span class="badge {{ complaint.state|lower }}" data-complaint-state>{{ complaint.get_state_display }}</span><small class="new-message" data-incoming {% if not complaint.incoming_user_response %}hidden{% endif %}>● 用户新留言</small></td>
+          <td><time>{{ complaint.complaint_time|date:'Y-m-d H:i' }}</time></td>
+          <td><a class="button small" href="{% url 'complaint_detail' merchant.id complaint.pk %}" data-open-complaint>查看 / 处理</a></td>
+        </tr>
+      {% empty %}<tr><td colspan="5"><div class="empty"><h3>没有符合条件的投诉</h3></div></td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  {% if page.paginator.num_pages > 1 %}<div class="pagination">{% if page.has_previous %}<a href="?{{ filter_query }}&page={{ page.previous_page_number }}">上一页</a>{% endif %}<span>{{ page.number }} / {{ page.paginator.num_pages }}</span>{% if page.has_next %}<a href="?{{ filter_query }}&page={{ page.next_page_number }}">下一页</a>{% endif %}</div>{% endif %}
+</section>
+<dialog id="complaint-dialog" class="complaint-dialog" aria-labelledby="complaint-dialog-title" {% if initial_complaint %}data-initial-url="{% url 'complaint_detail' merchant.id initial_complaint.pk %}?dialog=1"{% endif %}>
+  <div class="complaint-dialog-bar"><h2 id="complaint-dialog-title">投诉处理</h2><button type="button" class="text-button dialog-close" aria-label="关闭投诉详情" autofocus>×</button></div>
+  <p class="dialog-loading" role="status">正在加载投诉…</p>
+  <iframe title="投诉详情与协商记录" class="complaint-frame" hidden></iframe>
+</dialog>
+<details class="jobs panel"><summary>同步任务 <span class="muted">最近成功：{{ merchant.last_synced_at|date:'m-d H:i:s'|default:'尚未同步' }}</span></summary>{% if merchant.last_sync_error %}<p class="error-text">{{ merchant.last_sync_error }}</p>{% endif %}{% for job in jobs %}<div class="job-row"><span>#{{ job.pk }} · {{ job.kind|job_kind }}</span><span>{{ job.state|job_state }} · 第{{ job.attempts }}次</span><span class="muted">{{ job.created_at|date:'m-d H:i' }}</span>{% if job.error %}<span class="error-text">{{ job.error }}</span>{% endif %}{% if job.state == "failed" and perms.desk.sync_complaint %}<form action="{% url 'retry_job' merchant.id job.pk %}" method="post">{% csrf_token %}<button class="text-button">重新同步</button></form>{% endif %}</div>{% empty %}<p class="muted">暂无任务</p>{% endfor %}</details>
+{% else %}<div class="empty empty-start"><span class="brand-icon"><svg><use href="#i-shop"/></svg></span><h1>接入第一个微信商户号</h1>{% if perms.desk.add_merchant %}<a class="primary" href="{% url 'merchant_new' %}">＋ 添加商户号</a>{% endif %}</div>{% endif %}
+{% endblock %}
