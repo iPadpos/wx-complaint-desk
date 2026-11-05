@@ -398,6 +398,34 @@ class WechatIntegrationTests(TestCase):
         self.assertTrue(Merchant.objects.filter(pk=self.merchant.pk).exists())
         self.assertEqual(self.client.get(f'/merchants/{self.merchant.pk}/complaints/{self.complaint.pk}/image/?id=OTHER').status_code, 404)
 
+    def test_workspace_and_sidebar_pending_stats_use_recent_month(self):
+        now = timezone.now()
+        Complaint.objects.filter(pk=self.complaint.pk).update(state='PENDING', complaint_time=now - timedelta(days=31))
+        Complaint.objects.create(merchant=self.merchant, complaint_id='RECENT', state='PENDING',
+            complaint_time=now - timedelta(days=1))
+        self.client.force_login(self.user)
+        response = self.client.get(f'/merchants/{self.merchant.pk}/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['stats']['pending'], 1)
+        self.assertEqual(response.context['stats']['total'], 2)
+        self.assertEqual(response.context['merchants'].get(pk=self.merchant.pk).pending, 1)
+        self.assertEqual(response.context['page'].paginator.count, 2)
+        self.assertContains(response, '<div class="stat important"><span>待处理</span>'
+            '<strong data-stat="pending">1</strong><small>近一月</small></div>', html=True)
+
+    def test_complaint_detail_pending_stats_use_recent_month(self):
+        now = timezone.now()
+        Complaint.objects.filter(pk=self.complaint.pk).update(state='PENDING', complaint_time=now - timedelta(days=31))
+        Complaint.objects.create(merchant=self.merchant, complaint_id='RECENT', state='PENDING',
+            complaint_time=now - timedelta(days=1))
+        self.client.force_login(self.user)
+        response = self.client.get(f'/merchants/{self.merchant.pk}/complaints/{self.complaint.pk}/?dialog=1')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['stats']['pending'], 1)
+        self.assertEqual(response.context['stats']['total'], 2)
+        self.assertContains(response, '<script id="complaint-stats" type="application/json">'
+            '{"total": 2, "pending": 1, "processing": 0, "incoming": 0}</script>', html=True)
+
     def test_workspace_ignores_invalid_complaint_and_keeps_missing_numeric_404(self):
         self.client.force_login(self.user)
         url = f'/merchants/{self.merchant.pk}/'

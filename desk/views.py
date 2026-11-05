@@ -22,8 +22,13 @@ from .services import allowed_media, enqueue, media_ids, perform_operation, rece
 from .wechat import WechatError, configuration_errors, decrypt_notification, gateway_for, verify_signature
 
 
+def recent_pending(prefix=''):
+    # 待处理统计只算近30天，过旧投诉无处理需求。
+    return Q(**{f'{prefix}state': 'PENDING', f'{prefix}complaint_time__gte': timezone.now() - timedelta(days=30)})
+
+
 def context(merchant=None):
-    merchants = Merchant.objects.annotate(pending=Count('complaints', filter=Q(complaints__state='PENDING')))
+    merchants = Merchant.objects.annotate(pending=Count('complaints', filter=recent_pending('complaints__')))
     return {'merchants': merchants, 'merchant': merchant}
 
 
@@ -34,7 +39,7 @@ def workspace(request, merchant_id=None):
     ctx = context(merchant)
     if not merchant: return render(request, 'desk/workspace.html', ctx)
     base = Complaint.objects.filter(merchant=merchant)
-    stats = {'total': base.count(), 'pending': base.filter(state='PENDING').count(),
+    stats = {'total': base.count(), 'pending': base.filter(recent_pending()).count(),
              'processing': base.filter(state='PROCESSING').count(), 'incoming': base.filter(incoming_user_response=True).count()}
     qs = base
     query = request.GET.get('q', '').strip()[:128]
@@ -79,7 +84,7 @@ def complaint_detail(request, merchant_id, complaint_pk):
         row['media_ids'] = sorted(media_ids(item))
         history.append(row)
     stats = Complaint.objects.filter(merchant_id=merchant_id).aggregate(
-        total=Count('pk'), pending=Count('pk', filter=Q(state='PENDING')),
+        total=Count('pk'), pending=Count('pk', filter=recent_pending()),
         processing=Count('pk', filter=Q(state='PROCESSING')),
         incoming=Count('pk', filter=Q(incoming_user_response=True)))
     return render(request, 'desk/complaint_detail.html', {
