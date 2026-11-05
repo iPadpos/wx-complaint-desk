@@ -103,7 +103,7 @@ def sync_range(merchant, begin, end):
     begin, end = date.fromisoformat(begin), date.fromisoformat(end)
     if begin > end or (end - begin).days > 365: raise WechatError('同步日期需为一年以内的有效范围')
     gw = gateway_for(merchant)
-    count = 0
+    count, failed = 0, []
     while begin <= end:
         stop, offset = min(end, begin + timedelta(days=29)), 0
         while True:
@@ -111,12 +111,17 @@ def sync_range(merchant, begin, end):
             rows = page.get('data', [])
             if not isinstance(rows, list): raise WechatError('投诉列表格式错误')
             for row in rows:
-                sync_one(merchant, row['complaint_id'], gw,
-                         scoped_row=row if merchant.access_mode == 'channel' else None)
-                count += 1
+                cid = row['complaint_id']
+                try:
+                    sync_one(merchant, cid, gw,
+                             scoped_row=row if merchant.access_mode == 'channel' else None)
+                    count += 1
+                except WechatError:
+                    failed.append(cid)
             offset += len(rows)
             if not rows or offset >= page.get('total_count', offset if len(rows) < 50 else offset + 1): break
         begin = stop + timedelta(days=1)
+    if failed: raise WechatError(('部分投诉同步失败：' + '、'.join(failed))[:240])
     merchant.last_synced_at, merchant.last_sync_error = timezone.now(), ''
     merchant.save(update_fields=['last_synced_at', 'last_sync_error'])
     return count
@@ -193,6 +198,8 @@ def perform_operation(merchant, complaint, user, operation_id, kind, payload):
                 or existing.complaint_id != (complaint.pk if complaint else None)
                 or existing.kind != kind or existing.payload_hash != digest or existing.user_id != user.pk):
                 raise WechatError('操作标识与请求不一致')
+            if existing.state == 'failed': return existing, '该操作此前未成功，请重新填写提交'
+            if existing.state in ('pending', 'unknown'): return existing, '该操作结果未确认，请先回查'
             return existing, '该操作已提交，未重复发送'
         unresolved = Operation.objects.filter(**owner, complaint=complaint, state__in=['pending', 'unknown'])
         if unresolved.exists(): raise WechatError('此投诉或配置有结果未确认的操作，请先同步回查并在操作记录中确认')

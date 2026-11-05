@@ -155,10 +155,30 @@ class WechatIntegrationTests(TestCase):
         with patch('desk.services.gateway_for', return_value=gw):
             op, _ = perform_operation(self.merchant, self.complaint, self.user, key, 'reply', body)
             self.assertEqual(op.state, 'unknown')
-            perform_operation(self.merchant, self.complaint, self.user, key, 'reply', body)
+            _, msg = perform_operation(self.merchant, self.complaint, self.user, key, 'reply', body)
+            self.assertEqual(msg, '该操作结果未确认，请先回查')
             self.assertEqual(gw.calls, 1)
             with self.assertRaises(WechatError): perform_operation(self.merchant, self.complaint, self.user, key, 'reply', {'other': 1})
             with self.assertRaises(WechatError): perform_operation(self.merchant, self.complaint, self.user, uuid.uuid4(), 'reply', body)
+
+    def test_failed_operation_replay_reports_failure_without_resending(self):
+        class Gateway:
+            calls = 0
+            def complaint(gw, cid): return dict(self.data)
+            def action(gw, *args):
+                gw.calls += 1
+                raise WechatError('无权限', code='NO_AUTH')
+        gw = Gateway()
+        key = uuid.uuid4()
+        body = {'complainted_mchid': self.merchant.mch_id, 'response_content': '测试回复'}
+        with patch('desk.services.gateway_for', return_value=gw):
+            op, _ = perform_operation(self.merchant, self.complaint, self.user, key, 'reply', body)
+            replay, msg = perform_operation(self.merchant, self.complaint, self.user, key, 'reply', body)
+        self.assertEqual(op.state, 'failed')
+        self.assertEqual(replay.pk, op.pk)
+        self.assertEqual(msg, '该操作此前未成功，请重新填写提交')
+        self.assertEqual(gw.calls, 1)
+        self.assertEqual(Operation.objects.count(), 1)
 
     def test_success_not_resent_when_refresh_fails(self):
         class Gateway:
@@ -229,6 +249,57 @@ class WechatIntegrationTests(TestCase):
         with patch('desk.services.gateway_for', return_value=Gateway()):
             sync_range(self.merchant, '2026-08-01', '2026-09-01')
         self.assertEqual(calls, [('2026-08-01', '2026-08-30'), ('2026-08-31', '2026-09-01')])
+
+    def test_range_job_keeps_later_complaints_and_reports_failed_id(self):
+        for failure in ('NO_AUTH', 'RESOURCE_NOT_EXISTS', 'missing_time'):
+            with self.subTest(failure=failure):
+                stamp = timezone.now() - timedelta(days=1)
+                self.merchant.last_synced_at, self.merchant.last_sync_error = stamp, '上次失败'
+                self.merchant.save()
+                class Gateway:
+                    def list_complaints(gw, begin, end, offset):
+                        return {'data': [{'complaint_id': 'BAD-C001'}, {'complaint_id': 'GOOD-C002'}], 'total_count': 2}
+                    def complaint(gw, cid):
+                        detail = {**self.data, 'complaint_id': cid}
+                        if cid == 'BAD-C001' and failure == 'missing_time': detail.pop('complaint_time')
+                        return detail
+                    def negotiations(gw, cid, offset=0):
+                        if cid == 'BAD-C001' and failure != 'missing_time':
+                            raise WechatError('历史读取失败', code=failure)
+                        return {'data': [], 'total_count': 0}
+                job = enqueue(self.merchant, 'sync', {'begin': '2026-09-01', 'end': '2026-09-01'})
+                with patch('desk.services.gateway_for', return_value=Gateway()):
+                    self.assertTrue(process_job())
+                self.assertTrue(Complaint.objects.filter(merchant=self.merchant, complaint_id='GOOD-C002').exists())
+                self.assertFalse(Complaint.objects.filter(merchant=self.merchant, complaint_id='BAD-C001').exists())
+                job.refresh_from_db(); self.merchant.refresh_from_db()
+                self.assertEqual((job.state, job.attempts), ('queued', 1))
+                self.assertIn('BAD-C001', job.error)
+                self.assertEqual(self.merchant.last_sync_error, job.error)
+                self.assertEqual(self.merchant.last_synced_at, stamp)
+                job.delete()
+                Complaint.objects.filter(merchant=self.merchant, complaint_id='GOOD-C002').delete()
+
+    def test_range_failure_summary_is_bounded_and_preserves_sync_status(self):
+        class Gateway:
+            def list_complaints(gw, begin, end, offset):
+                return {'data': [{'complaint_id': 'FAILED-' + str(i).zfill(8)} for i in range(30)], 'total_count': 30}
+        with patch('desk.services.gateway_for', return_value=Gateway()), patch('desk.services.sync_one', side_effect=WechatError('失败')) as sync:
+            with self.assertRaises(WechatError) as raised:
+                sync_range(self.merchant, '2026-09-01', '2026-09-01')
+        self.assertEqual(sync.call_count, 30)
+        self.assertIn('FAILED-00000000', str(raised.exception))
+        self.assertLessEqual(len(str(raised.exception)), 240)
+        self.merchant.refresh_from_db()
+        self.assertIsNone(self.merchant.last_synced_at)
+
+    def test_range_list_errors_still_abort(self):
+        class Gateway:
+            def list_complaints(gw, begin, end, offset): raise WechatError('列表读取失败', code='NO_AUTH')
+        with patch('desk.services.gateway_for', return_value=Gateway()), patch('desk.services.sync_one') as sync:
+            with self.assertRaisesMessage(WechatError, '列表读取失败'):
+                sync_range(self.merchant, '2026-09-01', '2026-09-01')
+        sync.assert_not_called()
 
     def test_native_date_inputs_use_iso_format_with_chinese_locale(self):
         form = SyncForm(initial={'begin': timezone.localdate(), 'end': timezone.localdate()})
