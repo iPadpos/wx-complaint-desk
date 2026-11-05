@@ -5,6 +5,7 @@ import re
 import tempfile
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -464,6 +465,35 @@ class ChannelIntegrationTests(TestCase):
         with self.assertRaisesMessage(WechatError, '已关联其他子商户'):
             sync_one(self.merchant, detail['complaint_id'], factory(self.merchant))
         self.assertEqual(list(Complaint.objects.values_list('merchant_id', flat=True)), [sibling.pk])
+
+    def test_channel_range_continues_after_complaint_bound_to_sibling(self):
+        sibling = Merchant.objects.create(name='同渠道另一商户', mch_id='1990000102', access_mode='channel', channel=self.channel)
+        Complaint.objects.create(merchant=sibling, complaint_id='BOUND-C001')
+        class Gateway:
+            merchant = self.merchant
+            def list_complaints(gw, begin, end, offset):
+                return {'data': [gw.complaint('BOUND-C001'), gw.complaint('NEXT-C002')], 'total_count': 2}
+            def complaint(gw, cid): return self.detail(cid, mch_id=self.channel.mch_id)
+            def negotiations(gw, cid, offset=0): return {'data': [], 'total_count': 0}
+        with patch('desk.services.gateway_for', return_value=Gateway()):
+            with self.assertRaisesMessage(WechatError, 'BOUND-C001'):
+                sync_range(self.merchant, '2026-10-01', '2026-10-01')
+        self.assertTrue(Complaint.objects.filter(merchant=self.merchant, complaint_id='NEXT-C002').exists())
+        self.assertEqual(Complaint.objects.get(complaint_id='BOUND-C001').merchant_id, sibling.pk)
+        self.merchant.refresh_from_db()
+        self.assertIsNone(self.merchant.last_synced_at)
+
+    def test_channel_notification_resolution_waits_five_minutes(self):
+        for state in ('pending', 'unknown'):
+            with self.subTest(state=state):
+                op = Operation.objects.create(channel=self.channel, user=self.user, kind='notify:PUT', payload_hash='x', state=state)
+                url = f'/operations/{op.pk}/resolve/'
+                response = self.client.post(url, {'outcome': 'failed', 'confirmed': 'on'}, follow=True)
+                self.assertContains(response, '请等待至少5分钟后核对')
+                op.refresh_from_db(); self.assertEqual(op.state, state)
+                Operation.objects.filter(pk=op.pk).update(created_at=timezone.now() - timedelta(minutes=6))
+                self.client.post(url, {'outcome': 'failed', 'confirmed': 'on'})
+                op.refresh_from_db(); self.assertEqual(op.state, 'failed')
 
     def test_channel_number_callback_routes_only_after_unique_submerchant_match(self):
         sibling = Merchant.objects.create(name='回调目标商户', mch_id='1990000102', access_mode='channel', channel=self.channel)

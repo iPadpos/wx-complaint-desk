@@ -337,6 +337,18 @@ class WechatIntegrationTests(TestCase):
         self.assertTrue(Merchant.objects.filter(pk=self.merchant.pk).exists())
         self.assertEqual(self.client.get(f'/merchants/{self.merchant.pk}/complaints/{self.complaint.pk}/image/?id=OTHER').status_code, 404)
 
+    def test_workspace_ignores_invalid_complaint_and_keeps_missing_numeric_404(self):
+        self.client.force_login(self.user)
+        url = f'/merchants/{self.merchant.pk}/'
+        for cid in ('abc', '-1', '1.5', '²'):
+            with self.subTest(cid=cid):
+                response = self.client.get(url, {'complaint': cid})
+                self.assertEqual(response.status_code, 200)
+                self.assertIsNone(response.context['initial_complaint'])
+        self.assertEqual(self.client.get(url, {'complaint': self.complaint.pk + 1000}).status_code, 404)
+        response = self.client.get(url, {'complaint': self.complaint.pk})
+        self.assertEqual(response.context['initial_complaint'].pk, self.complaint.pk)
+
     def test_complaint_detail_permission_and_merchant_boundary(self):
         url = f'/merchants/{self.merchant.pk}/complaints/{self.complaint.pk}/?dialog=1'
         self.assertEqual(self.client.get(url).status_code, 302)
@@ -366,6 +378,20 @@ class WechatIntegrationTests(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.payload()['message']['blocks'][0], {'type': 'TEXT', 'text': {'text': '人工回复'}})
 
+    def test_reply_validation_rerender_keeps_uploaded_media_and_list_container(self):
+        self.client.force_login(self.user)
+        Media.objects.create(merchant=self.merchant, complaint=self.complaint, media_id='UPLOADED-IMAGE')
+        media = json.dumps(['UPLOADED-IMAGE'])
+        with patch('desk.views.perform_operation') as perform:
+            response = self.client.post(f'/merchants/{self.merchant.pk}/complaints/{self.complaint.pk}/reply/',
+                {'operation_id': uuid.uuid4(), 'content': '', 'media': media})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['form']['media'].value(), media)
+        self.assertNotIn('media', response.context['form'].errors)
+        self.assertContains(response, 'value="[&quot;UPLOADED-IMAGE&quot;]"')
+        self.assertContains(response, '<div class="upload-results" aria-live="polite"></div>', html=True)
+        perform.assert_not_called()
+
     def test_all_write_paths_and_notification_methods(self):
         seen = []
         def handle(request):
@@ -376,6 +402,126 @@ class WechatIntegrationTests(TestCase):
         for method in ('GET', 'POST', 'PUT', 'DELETE'): gw.notification_config(method, 'https://example.com/callbacks/')
         self.assertEqual([url.split('/')[-1] for _, url in seen[:4]], ['response', 'complete', 'update-refund-progress', 'response-immediate-service'])
         self.assertEqual([method for method, _ in seen[4:]], ['GET', 'POST', 'PUT', 'DELETE'])
+
+    def test_merchant_notification_writes_require_prior_query(self):
+        self.client.force_login(self.user)
+        session = self.client.session
+        session[f'channel_notification:{self.merchant.pk}'] = {'url': ''}
+        session.save()
+        with patch('desk.views.gateway_for') as gateway:
+            for action in ('POST', 'PUT', 'DELETE'):
+                with self.subTest(action=action):
+                    response = self.client.post(f'/merchants/{self.merchant.pk}/notifications/',
+                        {'action': action, 'url': 'https://new.example' + self.merchant.callback_path,
+                         'confirmed': True, 'operation_id': uuid.uuid4()})
+                    self.assertContains(response, '请先查询微信当前通知配置')
+            gateway.return_value.notification_config.assert_not_called()
+        self.assertFalse(Operation.objects.exists())
+
+    def test_merchant_notification_detects_remote_url_change(self):
+        self.client.force_login(self.user)
+        url = f'/merchants/{self.merchant.pk}/notifications/'
+        remote = {'url': 'https://existing.example/notify', 'mchid': self.merchant.mch_id}
+        calls = []
+        def handle(request):
+            calls.append(request.method)
+            return self.response(remote)
+        with patch('desk.views.gateway_for', return_value=self.gw(handle)):
+            self.client.post(url, {'action': 'GET', 'operation_id': uuid.uuid4()})
+            remote['url'] = 'https://changed.example/notify'
+            response = self.client.post(url, {'action': 'PUT', 'url': 'https://new.example' + self.merchant.callback_path,
+                'confirmed': True, 'operation_id': uuid.uuid4()})
+        self.assertContains(response, '微信通知配置已变化')
+        self.assertNotIn(f'merchant_notification:{self.merchant.pk}', self.client.session)
+        self.assertEqual(calls, ['GET', 'GET'])
+        self.assertFalse(Operation.objects.exists())
+
+    def test_merchant_notification_missing_remote_is_not_configured(self):
+        self.client.force_login(self.user)
+        gw = self.gw(lambda _: self.response({'code': 'RESOURCE_NOT_EXISTS'}, 404))
+        with patch('desk.views.gateway_for', return_value=gw):
+            response = self.client.post(f'/merchants/{self.merchant.pk}/notifications/',
+                {'action': 'GET', 'operation_id': uuid.uuid4()})
+        self.assertContains(response, '未配置通知地址')
+        self.assertEqual(response.context['remote'], {})
+        self.assertFalse(response.context['form'].errors)
+        self.assertEqual(self.client.session[f'merchant_notification:{self.merchant.pk}'], {'url': ''})
+        self.assertFalse(Operation.objects.exists())
+
+    def test_merchant_notification_rejects_mchid_mismatch_on_query_and_submit(self):
+        self.client.force_login(self.user)
+        url = f'/merchants/{self.merchant.pk}/notifications/'
+        remote = {'url': 'https://existing.example/notify', 'mchid': self.other.mch_id}
+        gw = self.gw(lambda _: self.response(remote))
+        with patch('desk.views.gateway_for', return_value=gw), patch('desk.views.perform_operation') as perform:
+            response = self.client.post(url, {'action': 'GET', 'operation_id': uuid.uuid4()})
+            self.assertContains(response, '微信返回的通知配置账号不匹配')
+            self.assertNotIn(f'merchant_notification:{self.merchant.pk}', self.client.session)
+            remote['mchid'] = self.merchant.mch_id
+            self.client.post(url, {'action': 'GET', 'operation_id': uuid.uuid4()})
+            remote['mchid'] = self.other.mch_id
+            response = self.client.post(url, {'action': 'PUT', 'url': 'https://new.example' + self.merchant.callback_path,
+                'confirmed': True, 'operation_id': uuid.uuid4()})
+            self.assertContains(response, '微信返回的通知配置账号不匹配')
+            perform.assert_not_called()
+        self.assertFalse(Operation.objects.exists())
+
+    def test_merchant_notification_can_write_after_confirmed_query(self):
+        self.client.force_login(self.user)
+        url = f'/merchants/{self.merchant.pk}/notifications/'
+        new_url = 'https://new.example' + self.merchant.callback_path
+        for action in ('POST', 'PUT', 'DELETE'):
+            with self.subTest(action=action):
+                remote = {} if action == 'POST' else {'url': 'https://existing.example/notify', 'mchid': self.merchant.mch_id}
+                calls = []
+                def handle(request):
+                    calls.append(request.method)
+                    if request.method in ('POST', 'PUT'):
+                        remote.update(url=json.loads(request.content)['url'], mchid=self.merchant.mch_id)
+                    if request.method == 'DELETE': remote.clear()
+                    if not remote: return self.response({'code': 'RESOURCE_NOT_EXISTS'}, 404) if request.method == 'GET' else self.response(None, 204)
+                    return self.response(remote)
+                gw = self.gw(handle)
+                with patch('desk.views.gateway_for', return_value=gw), patch('desk.services.gateway_for', return_value=gw):
+                    response = self.client.post(url, {'action': 'GET', 'operation_id': uuid.uuid4()})
+                    self.assertFalse(response.context['form'].errors)
+                    key = uuid.uuid4()
+                    response = self.client.post(url, {'action': action, 'url': new_url,
+                        'confirmed': True, 'operation_id': key})
+                self.assertContains(response, '微信已接受操作')
+                self.assertFalse(response.context['form'].errors)
+                self.assertEqual(response.context['remote'], remote)
+                self.assertEqual(Operation.objects.get(pk=key).state, 'success')
+                self.assertEqual(calls, ['GET', 'GET', action, 'GET'])
+                self.assertNotIn(f'merchant_notification:{self.merchant.pk}', self.client.session)
+
+    def test_operations_unknown_has_resolve_link_with_change_permission(self):
+        user = User.objects.create_user('operation-reviewer', password='TestOnly-12345')
+        user.user_permissions.add(Permission.objects.get(codename='view_operation'),
+                                  Permission.objects.get(codename='change_operation'))
+        self.client.force_login(user)
+        op = Operation.objects.create(merchant=self.merchant, user=self.user, kind='notify:PUT', payload_hash='x')
+        for state in ('unknown', 'pending'):
+            with self.subTest(state=state):
+                op.state = state; op.save()
+                response = self.client.get('/operations/')
+                self.assertContains(response, f'href="/operations/{op.pk}/resolve/"')
+
+    def test_unknown_notification_resolution_waits_five_minutes_and_requires_confirmation(self):
+        self.client.force_login(self.user)
+        op = Operation.objects.create(merchant=self.merchant, user=self.user, kind='notify:PUT', payload_hash='x', state='unknown')
+        url = f'/operations/{op.pk}/resolve/'
+        for outcome in ('success', 'failed'):
+            with self.subTest(outcome=outcome):
+                response = self.client.post(url, {'outcome': outcome, 'confirmed': 'on'}, follow=True)
+                self.assertContains(response, '请等待至少5分钟后核对')
+                op.refresh_from_db(); self.assertEqual(op.state, 'unknown')
+        Operation.objects.filter(pk=op.pk).update(created_at=timezone.now() - timedelta(minutes=6))
+        response = self.client.post(url, {'outcome': 'success'}, follow=True)
+        self.assertContains(response, '须确认已核对微信侧实际结果')
+        op.refresh_from_db(); self.assertEqual(op.state, 'unknown')
+        self.client.post(url, {'outcome': 'success', 'confirmed': 'on'})
+        op.refresh_from_db(); self.assertEqual(op.state, 'success')
 
     def test_unknown_requires_fresh_sync_before_manual_resolution(self):
         op = Operation.objects.create(merchant=self.merchant, complaint=self.complaint, user=self.user,

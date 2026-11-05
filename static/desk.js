@@ -143,11 +143,25 @@ document.querySelectorAll('form').forEach(form => {
     const output = form.querySelector('.upload-results');
     const media = form.querySelector('[name="media"]');
     const ids = media ? JSON.parse(media.value || '[]') : [];
+    const render = (message = '') => {
+      output.replaceChildren();
+      ids.forEach((id, index) => {
+        const row = document.createElement('p'); row.textContent = `图片 ${index + 1} · ${id}`;
+        const remove = document.createElement('button'); remove.type='button'; remove.textContent='移除';
+        remove.addEventListener('click', () => { ids.splice(index,1); render(); });
+        row.append(remove); output.append(row);
+      });
+      if (message) {
+        const status = document.createElement('p'); status.textContent = message; output.append(status);
+      }
+      if (media) media.value = JSON.stringify(ids);
+    };
+    render();
     let uploading = false;
     input.addEventListener('change', async () => {
       if (uploading) return;
       const files = [...input.files];
-      if (files.length + ids.length > 4) { output.textContent = '最多上传4张图片'; input.value = ''; return; }
+      if (files.length + ids.length > 4) { render('最多上传4张图片'); input.value = ''; return; }
       uploading = true;
       input.disabled = true;
       form.querySelectorAll('button[data-send]').forEach(button => { button.disabled = true; });
@@ -155,23 +169,16 @@ document.querySelectorAll('form').forEach(form => {
         for (const file of files) {
           if (file.size > 2 * 1024 * 1024) throw new Error('图片大小不能超过2MB');
           const data = new FormData(); data.append('file', file);
-          output.textContent = `正在上传 ${file.name}…`;
+          render(`正在上传 ${file.name}…`);
           const response = await fetch(form.dataset.uploadUrl, { method:'POST', body:data,
             headers:{'X-CSRFToken':form.querySelector('[name="csrfmiddlewaretoken"]').value}, credentials:'same-origin' });
           if (response.redirected) throw new Error('登录已过期，请刷新后重新登录');
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || '图片上传失败');
           ids.push(result.media_id);
-          if (media) media.value = JSON.stringify(ids);
+          render();
         }
-        output.replaceChildren();
-        ids.forEach((id, index) => {
-          const row = document.createElement('p'); row.textContent = `图片 ${index + 1} · ${id}`;
-          const remove = document.createElement('button'); remove.type='button'; remove.textContent='移除';
-          remove.addEventListener('click', () => { ids.splice(ids.indexOf(id),1); if (media) media.value=JSON.stringify(ids); row.remove(); });
-          row.append(remove); output.append(row);
-        });
-      } catch (error) { output.textContent = error.message; }
+      } catch (error) { render(error.message); }
       finally { uploading=false; input.disabled=false; input.value=''; form.querySelectorAll('button[data-send]').forEach(button => { button.disabled=false; }); }
     });
   }

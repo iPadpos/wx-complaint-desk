@@ -54,7 +54,7 @@ def workspace(request, merchant_id=None):
             else: messages.error(request, '筛选日期无效')
     page = Paginator(qs, 15).get_page(request.GET.get('page'))
     cid = request.GET.get('complaint')
-    initial_complaint = get_object_or_404(base, pk=cid) if cid else None
+    initial_complaint = get_object_or_404(base, pk=cid) if cid and cid.isdecimal() else None
     today = timezone.localdate()
     ctx.update(stats=stats, page=page, initial_complaint=initial_complaint, errors=configuration_errors(merchant),
                sync_form=SyncForm(initial={'begin': today - timedelta(days=2), 'end': today}),
@@ -285,18 +285,38 @@ def notifications(request, merchant_id):
         return redirect('channel_notifications', channel_id=merchant.channel_id)
     form = NotificationForm(request.POST or None, merchant=merchant, initial={'url': merchant.notify_url})
     remote = None
+    snapshot_key = f'merchant_notification:{merchant.pk}'
+
+    def query_remote(gw):
+        try: result = gw.notification_config()
+        except WechatError as error:
+            if error.code != 'RESOURCE_NOT_EXISTS': raise
+            result = {}
+        if result.get('mchid', merchant.mch_id) != merchant.mch_id:
+            raise WechatError('微信返回的通知配置账号不匹配')
+        return result
+
     if request.method == 'POST' and form.is_valid():
         data = form.cleaned_data
         try:
             gw = gateway_for(merchant)
-            if data['action'] == 'GET': remote = gw.notification_config()
+            if data['action'] == 'GET':
+                remote = query_remote(gw)
+                request.session[snapshot_key] = {'url': remote.get('url', '')}
             else:
+                snapshot = request.session.get(snapshot_key)
+                if snapshot is None: raise WechatError('请先查询微信当前通知配置，再确认是否需要修改')
+                remote = query_remote(gw)
+                if remote.get('url', '') != snapshot['url']:
+                    request.session.pop(snapshot_key, None)
+                    raise WechatError('微信通知配置已变化，请重新查询并核对现有地址用途')
                 op, msg = perform_operation(merchant, None, request.user, data['operation_id'],
                     'notify:' + data['action'], {'url': data['url']} if data['action'] != 'DELETE' else {})
                 (messages.success if op.state == 'success' else messages.error)(request, msg)
+                request.session.pop(snapshot_key, None)
                 if op.state == 'success':
                     # 接受结果后回查；未存在返回提示而不影响写入审计。
-                    try: remote = gw.notification_config()
+                    try: remote = query_remote(gw)
                     except WechatError: messages.info(request, '微信已接受操作，配置回查暂未成功，请再次查询')
                 form = NotificationForm(merchant=merchant, initial={'url': data['url']})
         except WechatError as error: form.add_error(None, str(error))
@@ -434,7 +454,8 @@ def resolve_operation(request, operation_id):
     if request.method == 'POST':
         if operation.state not in ('pending', 'unknown') or request.POST.get('outcome') not in ('success', 'failed'):
             return HttpResponse('操作状态不允许确认', status=400)
-        if operation.state == 'pending' and operation.created_at > timezone.now() - timedelta(minutes=5):
+        if ((operation.state == 'pending' or (not operation.complaint_id and operation.kind.startswith('notify:'))) and
+            operation.created_at > timezone.now() - timedelta(minutes=5)):
             messages.error(request, '操作可能仍在执行，请等待至少5分钟后核对')
         elif operation.complaint and operation.complaint.synced_at < operation.created_at:
             messages.error(request, '请先同步该投诉的最新详情和协商记录，再确认远端结果')
