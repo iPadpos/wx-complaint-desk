@@ -1,5 +1,6 @@
 import re
 import uuid
+from pathlib import Path
 from urllib.parse import urlsplit
 from django import forms
 from django.db.models import Q
@@ -39,6 +40,18 @@ def clean_credential_uploads(form, data):
                 if not data.get('serial_no'):
                     form.add_error('serial_no', '请同时上传 apiclient_cert.pem 自动读取，或填写配套的 API 证书序列号')
             except forms.ValidationError as error: form.add_error('private_key_upload', error)
+        if private is not None and not certificate_upload:
+            try:
+                path = form.instance.private_key_path
+                if not path: raise OSError()
+                raw = Path(path).with_name('apiclient_cert.pem').read_bytes()
+                certificate, serial = parse_merchant_certificate(raw, data.get('mch_id'), account_label=form.fields['mch_id'].label)
+                if serial != form.instance.serial_no or serial != data.get('serial_no'):
+                    raise forms.ValidationError('现有证书序列号不匹配')
+                form.credential_uploads['apiclient_cert.pem'] = raw
+            except (OSError, ValueError, forms.ValidationError):
+                certificate = None
+                form.add_error('certificate_upload', '现有证书不可用，请同时上传配套的 apiclient_cert.pem')
         if certificate is not None:
             if private is None and not private_upload:
                 path = data.get('private_key_path')

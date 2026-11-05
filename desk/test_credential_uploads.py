@@ -181,6 +181,36 @@ class CredentialUploadTests(TestCase):
         self.assertEqual(channel.private_key_path, old_path)
         self.assertEqual(channel.serial_no, self.serial)
 
+    def test_key_only_upload_rejects_mismatch_with_saved_channel_certificate(self):
+        channel = self.create_channel()
+        other_key = self.other_private.private_bytes(serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+        form = ChannelForm(self.edit_data(channel), {
+            'private_key_upload': SimpleUploadedFile('apiclient_key.pem', other_key)}, instance=channel)
+        self.assertFalse(form.is_valid())
+        self.assertIn('证书与私钥不配套', str(form.errors['private_key_upload']))
+        self.assertEqual(len(list(self.root.iterdir())), 1)
+
+    def test_key_only_upload_accepts_matching_saved_channel_certificate(self):
+        channel = self.create_channel()
+        for _ in range(2):
+            old_path = channel.private_key_path
+            form = ChannelForm(self.edit_data(channel), {
+                'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=channel)
+            self.assertTrue(form.is_valid(), form.errors)
+            channel = save_channel_configuration(form)
+            self.assertNotEqual(channel.private_key_path, old_path)
+            self.assertEqual(Path(channel.private_key_path).read_bytes(), self.private_pem)
+            self.assertEqual(Path(channel.private_key_path).with_name('apiclient_cert.pem').read_bytes(), self.cert_pem)
+
+    def test_key_only_upload_requires_channel_certificate_when_saved_copy_unavailable(self):
+        channel = self.create_channel()
+        Path(channel.private_key_path).with_name('apiclient_cert.pem').unlink()
+        form = ChannelForm(self.edit_data(channel), {
+            'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=channel)
+        self.assertFalse(form.is_valid())
+        self.assertIn('请同时上传配套的 apiclient_cert.pem', str(form.errors['certificate_upload']))
+
     def test_certificate_file_widget_accepts_pem_and_zip_is_not_rendered_on_page(self):
         response = self.client.get('/channels/new/')
         self.assertContains(response, 'name="certificate_upload"')
@@ -217,6 +247,7 @@ class CredentialUploadTests(TestCase):
         for serial, valid in [('', False), (self.serial, True)]:
             files = {'private_key_upload': SimpleUploadedFile('private.pem', self.private_pem),
                      'public_key_upload': SimpleUploadedFile('public.pem', self.public_pem)}
+            if valid: files['certificate_upload'] = SimpleUploadedFile('apiclient_cert.pem', self.cert_pem)
             form = ChannelForm(self.data(serial_no=serial), files)
             self.assertEqual(form.is_valid(), valid, form.errors)
             if valid:
