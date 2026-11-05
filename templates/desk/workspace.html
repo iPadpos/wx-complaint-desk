@@ -10,11 +10,11 @@
   <div class="panel-heading"><h2>投诉列表 <span>{{ page.paginator.count }}</span></h2></div>
   <div class="table-wrap">
     <table class="complaint-table">
-      <thead><tr><th>投诉内容</th><th>投诉单号 / 商户订单号</th><th>状态</th><th>投诉时间</th><th>操作</th></tr></thead>
+      <thead><tr><th>投诉内容</th><th>联系方式 / 商户订单号</th><th>状态</th><th>投诉时间</th><th>操作</th></tr></thead>
       <tbody>{% for complaint in page %}
         <tr class="complaint-row" data-complaint-id="{{ complaint.pk }}" data-detail-url="{% url 'complaint_detail' merchant.id complaint.pk %}?dialog=1">
           <td><a class="complaint-title" href="{% url 'complaint_detail' merchant.id complaint.pk %}" data-open-complaint>{{ complaint.detail.problem_description|default:complaint.problem_type|default:'客户投诉' }}</a><p class="complaint-preview">{{ complaint.detail.complaint_detail|truncatechars:65 }}</p></td>
-          <td><span class="mono">{{ complaint.complaint_id }}</span><small class="mono">{{ complaint.order_no|default:'未提供订单号' }}</small></td>
+          <td><b class="mono">{{ complaint.detail.payer_phone|default:'未提供' }}</b><small class="mono">{{ complaint.order_no|default:'未提供订单号' }}</small></td>
           <td><span class="badge {{ complaint.state|lower }}" data-complaint-state>{{ complaint.get_state_display }}</span><small class="new-message" data-incoming {% if not complaint.incoming_user_response %}hidden{% endif %}>● 用户新留言</small></td>
           <td><time>{{ complaint.complaint_time|date:'Y-m-d H:i' }}</time></td>
           <td><a class="button small" href="{% url 'complaint_detail' merchant.id complaint.pk %}" data-open-complaint>查看 / 处理</a></td>

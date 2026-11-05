@@ -60,10 +60,11 @@
 
 /* 普通列表与聊天弹窗。 */
 .complaint-table {table-layout: fixed}
-.complaint-table th:first-child {width: 35%}
+.complaint-table th:first-child {width: 33%}
 .complaint-table th:nth-child(2) {width: 25%}
 .complaint-table th:nth-child(3) {width: 12%}
-.complaint-table th:nth-child(4) {width: 16%}
+.complaint-table th:nth-child(4) {width: 15%}
+.complaint-table th:last-child {width: 15%}
 .complaint-table .complaint-row {display: table-row; padding: 0; cursor: pointer}
 .complaint-table td {vertical-align: middle; overflow-wrap: anywhere; padding: 18px 20px}
 .complaint-title {font-size: 13px; font-weight: 600; color: var(--ink)}
@@ -103,12 +104,14 @@ html.complaint-dialog-open {overflow: hidden; scrollbar-gutter: auto}
 .chat-detail .reply-section textarea {min-height: 70px; height: 70px}
 .chat-detail .reply-submit {margin-top: 10px}
 .chat-detail .detail-foot {padding: 4px 22px; background: #fff; flex-shrink: 0}
-@media(max-width:720px) {
+@media(max-width:1020px) {
   .complaint-table thead {display: none}
   .complaint-table .complaint-row {display: grid; grid-template-columns: 1fr 1fr; padding: 15px}
   .complaint-table td {display: block; border: 0; padding: 5px 0}
   .complaint-table td:first-child, .complaint-table td:nth-child(2) {grid-column: 1 / -1}
   .complaint-table td:last-child {grid-column: 1 / -1; text-align: right}
+}
+@media(max-width:720px) {
   .complaint-dialog {width: 100vw; height: 100dvh; margin: 0; border: 0; border-radius: 0}
   .embedded-page {padding: 16px}
   .embedded-chat {padding: 0}
@@ -187,6 +190,34 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {outline: 2px 
 .chat-panel .reply-submit {justify-content: flex-end}
 .chat-panel .reply-submit .primary {background: #07b75b; border-color: #07b75b; min-width: 95px}
 .chat-panel .advanced {font-size: 11px}
+/* 提高投诉列表及详情的可读性，突出处理状态与操作入口。 */
+.complaint-table {font-size: 14px}
+.complaint-table th {font-size: 13px; font-weight: 600}
+.complaint-table .complaint-title {font-size: 15px}
+.complaint-table .complaint-preview {font-size: 14px}
+.complaint-table td > b.mono {font-size: 15px}
+.complaint-table td > small.mono, .complaint-table time {font-size: 13px}
+.complaint-table .new-message {font-size: 12px}
+.complaint-table td:last-child {padding-left: 12px; padding-right: 12px}
+.complaint-table [data-complaint-state],
+.chat-detail .detail-heading > .badge,
+.chat-detail .info-toggle > .badge {font-size: 14px; font-weight: 700; padding: 5px 10px; border: 1px solid; letter-spacing: 0}
+.complaint-table a.button[data-open-complaint] {font-size: 14px; font-weight: 600; min-height: 42px; padding: 9px 14px; background: var(--accent); border-color: var(--accent); color: #fff}
+.complaint-table a.button[data-open-complaint]:hover {background: #1d4ed8; border-color: #1d4ed8}
+.chat-detail .detail-heading h2 {font-size: 18px}
+.chat-detail .detail-actions .button {font-size: 14px; font-weight: 600; min-height: 42px; padding: 8px 12px; border-color: #cbd5e1}
+.chat-detail .detail-actions a.button {color: var(--accent); border-color: #bfdbfe; background: #eff6ff}
+.chat-detail .section-label {font-size: 14px}
+.chat-detail .customer-message {font-size: 14px; line-height: 1.85}
+.chat-detail .tags span {font-size: 12px}
+.chat-detail .order-details {font-size: 13px}
+.chat-detail .order-card b, .chat-detail .order-card p {font-size: 12px}
+.chat-detail .chat-conversation .timeline-item p {font-size: 15px; line-height: 1.8}
+.chat-detail .timeline-meta b, .chat-detail .timeline-meta time {font-size: 12px}
+.chat-detail .reply-section textarea {font-size: 15px}
+.chat-detail .reply-tools .upload-button {font-size: 13px}
+.chat-detail .reply-submit .primary {font-size: 14px; min-height: 42px}
+.chat-detail .detail-foot {font-size: 11px}
 @media(max-width:720px) {
   .complaint-dialog {width: 100vw}
   .chat-detail {grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr)}

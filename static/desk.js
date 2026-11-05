@@ -158,9 +158,8 @@ document.querySelectorAll('form').forEach(form => {
     };
     render();
     let uploading = false;
-    input.addEventListener('change', async () => {
+    const uploadFiles = async files => {
       if (uploading) return;
-      const files = [...input.files];
       if (files.length + ids.length > 4) { render('最多上传4张图片'); input.value = ''; return; }
       uploading = true;
       input.disabled = true;
@@ -180,7 +179,23 @@ document.querySelectorAll('form').forEach(form => {
         }
       } catch (error) { render(error.message); }
       finally { uploading=false; input.disabled=false; input.value=''; form.querySelectorAll('button[data-send]').forEach(button => { button.disabled=false; }); }
-    });
+    };
+    input.addEventListener('change', () => uploadFiles([...input.files]));
+    if (content && form.hasAttribute('data-paste-images')) {
+      content.placeholder = '输入回复，可直接粘贴图片…';
+      content.addEventListener('paste', event => {
+        const files = [...(event.clipboardData?.items || [])]
+          .filter(item => item.kind === 'file' && item.type.startsWith('image/'))
+          .map(item => item.getAsFile()).filter(Boolean);
+        if (!files.length) return;
+        event.preventDefault();
+        if (uploading) {
+          render('图片正在上传，请稍候再粘贴');
+          return;
+        }
+        uploadFiles(files);
+      });
+    }
   }
   form.addEventListener('submit', event => {
     if (!form.checkValidity()) return;
