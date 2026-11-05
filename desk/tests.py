@@ -251,7 +251,10 @@ class WechatIntegrationTests(TestCase):
         self.assertEqual(calls, [('2026-08-01', '2026-08-30'), ('2026-08-31', '2026-09-01')])
 
     def test_range_job_keeps_later_complaints_and_reports_failed_id(self):
-        for failure in ('NO_AUTH', 'RESOURCE_NOT_EXISTS', 'missing_time'):
+        failures = [('RESOURCE_NOT_EXISTS', '历史读取失败'), ('missing_time', '微信投诉时间格式错误'),
+                    ('null_time', '微信投诉时间格式错误'), ('invalid_date', '微信投诉时间格式错误'),
+                    ('bad_history', '协商历史格式错误'), ('wrong_owner', '微信返回的投诉单或商户归属不匹配')]
+        for failure, reason in failures:
             with self.subTest(failure=failure):
                 stamp = timezone.now() - timedelta(days=1)
                 self.merchant.last_synced_at, self.merchant.last_sync_error = stamp, '上次失败'
@@ -261,11 +264,16 @@ class WechatIntegrationTests(TestCase):
                         return {'data': [{'complaint_id': 'BAD-C001'}, {'complaint_id': 'GOOD-C002'}], 'total_count': 2}
                     def complaint(gw, cid):
                         detail = {**self.data, 'complaint_id': cid}
-                        if cid == 'BAD-C001' and failure == 'missing_time': detail.pop('complaint_time')
+                        if cid == 'BAD-C001':
+                            if failure == 'missing_time': detail.pop('complaint_time')
+                            elif failure == 'null_time': detail['complaint_time'] = None
+                            elif failure == 'invalid_date': detail['complaint_time'] = '2026-02-30T10:00:00+08:00'
+                            elif failure == 'wrong_owner': detail['complainted_mchid'] = self.other.mch_id
                         return detail
                     def negotiations(gw, cid, offset=0):
-                        if cid == 'BAD-C001' and failure != 'missing_time':
+                        if cid == 'BAD-C001' and failure == 'RESOURCE_NOT_EXISTS':
                             raise WechatError('历史读取失败', code=failure)
+                        if cid == 'BAD-C001' and failure == 'bad_history': return {'data': {}}
                         return {'data': [], 'total_count': 0}
                 job = enqueue(self.merchant, 'sync', {'begin': '2026-09-01', 'end': '2026-09-01'})
                 with patch('desk.services.gateway_for', return_value=Gateway()):
@@ -275,19 +283,72 @@ class WechatIntegrationTests(TestCase):
                 job.refresh_from_db(); self.merchant.refresh_from_db()
                 self.assertEqual((job.state, job.attempts), ('queued', 1))
                 self.assertIn('BAD-C001', job.error)
+                self.assertIn('首个原因：' + reason, job.error)
                 self.assertEqual(self.merchant.last_sync_error, job.error)
                 self.assertEqual(self.merchant.last_synced_at, stamp)
                 job.delete()
                 Complaint.objects.filter(merchant=self.merchant, complaint_id='GOOD-C002').delete()
 
+    def test_range_global_complaint_errors_abort_before_later_complaints(self):
+        errors = [WechatError('微信接口错误', code=code) for code in (
+            'NO_AUTH', 'SIGN_ERROR', 'FREQUENCY_LIMITED', 'PARAM_ERROR', 'SYSTEM_ERROR', 'API_ERROR')]
+        errors += [WechatError('微信签名验证失败，请核对验签 ID、文件及系统时间'),
+                   WechatError('微信返回非预期状态', unknown=True, request_id='UNKNOWN-RESULT'),
+                   WechatError('微信应答格式错误')]
+        for error in errors:
+            for stage in ('complaint', 'negotiations'):
+                with self.subTest(code=error.code, message=str(error), stage=stage):
+                    calls = []
+                    class Gateway:
+                        def list_complaints(gw, begin, end, offset):
+                            return {'data': [{'complaint_id': 'BAD-C001'}, {'complaint_id': 'GOOD-C002'}], 'total_count': 2}
+                        def complaint(gw, cid):
+                            calls.append(('complaint', cid))
+                            if stage == 'complaint': raise error
+                            return {**self.data, 'complaint_id': cid}
+                        def negotiations(gw, cid, offset=0):
+                            calls.append(('negotiations', cid))
+                            raise error
+                    with patch('desk.services.gateway_for', return_value=Gateway()):
+                        with self.assertRaises(WechatError) as raised:
+                            sync_range(self.merchant, '2026-09-01', '2026-09-01')
+                    self.assertIs(raised.exception, error)
+                    expected = [('complaint', 'BAD-C001')]
+                    if stage == 'negotiations': expected.append(('negotiations', 'BAD-C001'))
+                    self.assertEqual(calls, expected)
+                    self.assertFalse(Complaint.objects.filter(complaint_id__in=['BAD-C001', 'GOOD-C002']).exists())
+                    self.merchant.refresh_from_db()
+                    self.assertIsNone(self.merchant.last_synced_at)
+
+    def test_range_network_errors_abort_before_later_complaints(self):
+        path = '/v3/merchant-service/complaints-v2'
+        for error_type in (httpx.ConnectError, httpx.ReadTimeout):
+            with self.subTest(error_type=error_type):
+                calls = []
+                def handle(request):
+                    calls.append(request.url.path)
+                    if request.url.path == path:
+                        return self.response({'data': [{'complaint_id': 'BAD-C001'}, {'complaint_id': 'GOOD-C002'}], 'total_count': 2})
+                    raise error_type('模拟连接失败', request=request)
+                with patch('desk.services.gateway_for', return_value=self.gw(handle)):
+                    with self.assertRaisesMessage(WechatError, '微信请求连接失败或超时') as raised:
+                        sync_range(self.merchant, '2026-09-01', '2026-09-01')
+                self.assertEqual(calls, [path, path + '/BAD-C001'])
+                self.assertEqual(raised.exception.code, '')
+                self.assertFalse(raised.exception.unknown)
+
     def test_range_failure_summary_is_bounded_and_preserves_sync_status(self):
         class Gateway:
             def list_complaints(gw, begin, end, offset):
                 return {'data': [{'complaint_id': 'FAILED-' + str(i).zfill(8)} for i in range(30)], 'total_count': 30}
-        with patch('desk.services.gateway_for', return_value=Gateway()), patch('desk.services.sync_one', side_effect=WechatError('失败')) as sync:
+        errors = [WechatError('首个资源不存在', code='RESOURCE_NOT_EXISTS')]
+        errors += [WechatError('后续资源不存在', code='RESOURCE_NOT_EXISTS') for _ in range(29)]
+        with patch('desk.services.gateway_for', return_value=Gateway()), patch('desk.services.sync_one', side_effect=errors) as sync:
             with self.assertRaises(WechatError) as raised:
                 sync_range(self.merchant, '2026-09-01', '2026-09-01')
         self.assertEqual(sync.call_count, 30)
+        self.assertTrue(str(raised.exception).startswith('部分投诉同步失败（首个原因：首个资源不存在）：FAILED-00000000'))
+        self.assertNotIn('后续资源不存在', str(raised.exception))
         self.assertIn('FAILED-00000000', str(raised.exception))
         self.assertLessEqual(len(str(raised.exception)), 240)
         self.merchant.refresh_from_db()
