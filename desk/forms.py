@@ -40,11 +40,13 @@ def clean_credential_uploads(form, data):
                 if not data.get('serial_no'):
                     form.add_error('serial_no', '请同时上传 apiclient_cert.pem 自动读取，或填写配套的 API 证书序列号')
             except forms.ValidationError as error: form.add_error('private_key_upload', error)
-        if private is not None and not certificate_upload:
+        if private is not None and not certificate_upload and form.instance.pk and form.instance.private_key_path:
             try:
-                path = form.instance.private_key_path
-                if not path: raise OSError()
-                raw = Path(path).with_name('apiclient_cert.pem').read_bytes()
+                path = Path(form.instance.private_key_path)
+                if not path.is_absolute(): raise ValueError()
+                with path.with_name('apiclient_cert.pem').open('rb') as file:
+                    raw = file.read(MAX_PEM_SIZE + 1)
+                if len(raw) > MAX_PEM_SIZE: raise ValueError()
                 certificate, serial = parse_merchant_certificate(raw, data.get('mch_id'), account_label=form.fields['mch_id'].label)
                 if serial != form.instance.serial_no or serial != data.get('serial_no'):
                     raise forms.ValidationError('现有证书序列号不匹配')

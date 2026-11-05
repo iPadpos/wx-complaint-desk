@@ -16,7 +16,7 @@ from django.db import DatabaseError, connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from .credentials import CredentialStorageError, save_channel_configuration
+from .credentials import CredentialStorageError, save_channel_configuration, MAX_PEM_SIZE
 from .forms import ChannelForm
 from .models import WechatChannel
 from .wechat import load_private, load_public
@@ -211,6 +211,28 @@ class CredentialUploadTests(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn('请同时上传配套的 apiclient_cert.pem', str(form.errors['certificate_upload']))
 
+    def test_key_only_upload_rejects_oversized_certificate_and_relative_saved_path(self):
+        channel = self.create_channel()
+        path = channel.private_key_path
+        for failure in ('oversized', 'relative_path'):
+            with self.subTest(failure=failure):
+                raw = self.cert_pem + b'\n' * MAX_PEM_SIZE if failure == 'oversized' else self.cert_pem
+                Path(path).with_name('apiclient_cert.pem').write_bytes(raw)
+                channel.private_key_path = path if failure == 'oversized' else os.path.relpath(path)
+                form = ChannelForm(self.edit_data(channel), {
+                    'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=channel)
+                self.assertFalse(form.is_valid())
+                self.assertIn('请同时上传配套的 apiclient_cert.pem', str(form.errors['certificate_upload']))
+                self.assertNotIn('apiclient_cert.pem', form.credential_uploads)
+
+    def test_key_only_upload_accepts_channel_without_saved_key_with_manual_serial(self):
+        channel = WechatChannel.objects.create(name='未配置私钥', mch_id=self.mch_id)
+        form = ChannelForm(self.edit_data(channel, serial_no=self.serial), {
+            'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=channel)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.credential_uploads['apiclient_key.pem'], self.private_pem)
+        self.assertNotIn('apiclient_cert.pem', form.credential_uploads)
+
     def test_certificate_file_widget_accepts_pem_and_zip_is_not_rendered_on_page(self):
         response = self.client.get('/channels/new/')
         self.assertContains(response, 'name="certificate_upload"')
@@ -247,13 +269,13 @@ class CredentialUploadTests(TestCase):
         for serial, valid in [('', False), (self.serial, True)]:
             files = {'private_key_upload': SimpleUploadedFile('private.pem', self.private_pem),
                      'public_key_upload': SimpleUploadedFile('public.pem', self.public_pem)}
-            if valid: files['certificate_upload'] = SimpleUploadedFile('apiclient_cert.pem', self.cert_pem)
             form = ChannelForm(self.data(serial_no=serial), files)
             self.assertEqual(form.is_valid(), valid, form.errors)
             if valid:
                 channel = save_channel_configuration(form)
                 self.assertTrue(Path(channel.private_key_path).is_file())
                 self.assertEqual(channel.serial_no, self.serial)
+                self.assertFalse(Path(channel.private_key_path).with_name('apiclient_cert.pem').exists())
 
     def test_public_key_id_and_certificate_serial_cannot_be_confused(self):
         form = ChannelForm(self.data(serial_no='PUB_KEY_ID_WRONG_FIELD'))
