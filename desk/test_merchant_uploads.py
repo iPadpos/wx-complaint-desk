@@ -99,6 +99,56 @@ class MerchantCredentialUploadTests(TestCase):
         self.assertEqual(merchant.api_v3_key, 'm' * 32)
         self.assertEqual((merchant.private_key_path, merchant.public_key_path), original_paths)
 
+    def test_key_only_upload_rejects_mismatch_with_saved_merchant_certificate(self):
+        merchant = self.create_merchant()
+        other_key = self.other.private_bytes(serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8, serialization.NoEncryption())
+        form = MerchantForm(self.edit_data(merchant), {
+            'private_key_upload': SimpleUploadedFile('apiclient_key.pem', other_key)}, instance=merchant)
+        self.assertFalse(form.is_valid())
+        self.assertIn('证书与私钥不配套', str(form.errors['private_key_upload']))
+        self.assertEqual(len(list(self.root.iterdir())), 1)
+
+    def test_key_only_upload_accepts_matching_saved_merchant_certificate(self):
+        merchant = self.create_merchant()
+        for _ in range(2):
+            old_path = merchant.private_key_path
+            form = MerchantForm(self.edit_data(merchant), {
+                'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=merchant)
+            self.assertTrue(form.is_valid(), form.errors)
+            merchant = save_merchant_configuration(form)
+            self.assertNotEqual(merchant.private_key_path, old_path)
+            self.assertEqual(Path(merchant.private_key_path).read_bytes(), self.private_pem)
+            self.assertEqual(Path(merchant.private_key_path).with_name('apiclient_cert.pem').read_bytes(), self.cert_pem)
+
+    def test_key_only_upload_requires_merchant_certificate_when_saved_copy_unavailable(self):
+        merchant = self.create_merchant()
+        Path(merchant.private_key_path).with_name('apiclient_cert.pem').unlink()
+        form = MerchantForm(self.edit_data(merchant), {
+            'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=merchant)
+        self.assertFalse(form.is_valid())
+        self.assertIn('请同时上传配套的 apiclient_cert.pem', str(form.errors['certificate_upload']))
+
+    def test_individual_private_upload_requires_serial_and_supports_public_upload(self):
+        for serial, valid in [('', False), (self.serial, True)]:
+            files = {'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem),
+                     'public_key_upload': SimpleUploadedFile('pub_key.pem', self.public_pem)}
+            form = MerchantForm(self.data(serial_no=serial), files)
+            self.assertEqual(form.is_valid(), valid, form.errors)
+            if valid:
+                merchant = save_merchant_configuration(form)
+                self.assertEqual(Path(merchant.private_key_path).read_bytes(), self.private_pem)
+                self.assertEqual(merchant.serial_no, self.serial)
+                self.assertFalse(Path(merchant.private_key_path).with_name('apiclient_cert.pem').exists())
+
+    def test_key_only_upload_accepts_merchant_without_saved_key_with_manual_serial(self):
+        merchant = Merchant.objects.create(name='未配置私钥', mch_id=self.mch_id)
+        form = MerchantForm(self.edit_data(merchant, serial_no=self.serial), {
+            'private_key_upload': SimpleUploadedFile('apiclient_key.pem', self.private_pem)}, instance=merchant)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.credential_uploads['apiclient_key.pem'], self.private_pem)
+        self.assertNotIn('apiclient_cert.pem', form.credential_uploads)
+
     def test_invalid_account_expired_certificate_and_mismatched_private_save_nothing(self):
         other_private = self.other.private_bytes(serialization.Encoding.PEM,
             serialization.PrivateFormat.PKCS8, serialization.NoEncryption())

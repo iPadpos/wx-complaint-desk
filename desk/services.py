@@ -11,6 +11,10 @@ from .models import ChannelNotification, Complaint, Job, Media, Merchant, Notifi
 from .wechat import WechatError, gateway_for
 
 
+class _ComplaintDataError(WechatError):
+    pass
+
+
 def enqueue(merchant, kind, payload, key=None):
     if key:
         job, _ = Job.objects.get_or_create(dedupe_key=f'{merchant.pk}:{key}', defaults={
@@ -23,7 +27,7 @@ def _channel_scope_row(merchant, cid, detail, gateway):
     """只有按目标子商户筛选的列表，才能证明返回渠道号的投诉归属。"""
     stamp = parse_datetime(detail.get('complaint_time', ''))
     if stamp is None:
-        raise WechatError('微信投诉时间格式错误')
+        raise _ComplaintDataError('微信投诉时间格式错误')
     if timezone.is_naive(stamp):
         stamp = timezone.make_aware(stamp)
     day = timezone.localtime(stamp).date().isoformat()
@@ -48,7 +52,7 @@ def _channel_scope_row(merchant, cid, detail, gateway):
 def _check_channel_scope_row(merchant, cid, row):
     if (not isinstance(row, dict) or row.get('complaint_id') != cid or
             row.get('complainted_mchid') not in (merchant.mch_id, merchant.channel.mch_id)):
-        raise WechatError('渠道投诉查询结果与目标子商户不匹配')
+        raise _ComplaintDataError('渠道投诉查询结果与目标子商户不匹配')
 
 
 def _validate_complaint_owner(merchant, cid, detail, gateway, scoped_row=None,
@@ -56,19 +60,19 @@ def _validate_complaint_owner(merchant, cid, detail, gateway, scoped_row=None,
     default_mchid = None if merchant.access_mode == 'channel' else merchant.mch_id
     owner = detail.get('complainted_mchid', default_mchid)
     if detail.get('complaint_id') != cid:
-        raise WechatError(error_message)
+        raise _ComplaintDataError(error_message)
     if owner == merchant.mch_id:
         return None
     if merchant.access_mode != 'channel' or not merchant.channel_id or owner != merchant.channel.mch_id:
-        raise WechatError(error_message)
+        raise _ComplaintDataError(error_message)
     if scoped_row is None:
         scoped_row = _channel_scope_row(merchant, cid, detail, gateway)
     elif getattr(gateway, 'merchant', None) != merchant:
-        raise WechatError('渠道投诉查询上下文与目标子商户不匹配')
+        raise _ComplaintDataError('渠道投诉查询上下文与目标子商户不匹配')
     _check_channel_scope_row(merchant, cid, scoped_row)
     if Complaint.objects.filter(merchant__access_mode='channel', merchant__channel_id=merchant.channel_id,
                                 complaint_id=cid).exclude(merchant=merchant).exists():
-        raise WechatError('该渠道投诉已关联其他子商户，请核对归属')
+        raise _ComplaintDataError('该渠道投诉已关联其他子商户，请核对归属')
     return scoped_row
 
 
@@ -80,12 +84,15 @@ def sync_one(merchant, cid, gateway=None, *, detail=None, scoped_row=None):
     while True:
         page = gw.negotiations(cid, offset)
         rows = page.get('data', [])
-        if not isinstance(rows, list): raise WechatError('协商历史格式错误')
+        if not isinstance(rows, list): raise _ComplaintDataError('协商历史格式错误')
         history.extend(rows)
         offset += len(rows)
         if not rows or offset >= page.get('total_count', offset if len(rows) < 300 else offset + 1): break
-    complaint_time = parse_datetime(detail.get('complaint_time', ''))
-    if complaint_time is None: raise WechatError('微信投诉时间格式错误')
+    try:
+        complaint_time = parse_datetime(detail.get('complaint_time', ''))
+    except (TypeError, ValueError) as error:
+        raise _ComplaintDataError('微信投诉时间格式错误') from error
+    if complaint_time is None: raise _ComplaintDataError('微信投诉时间格式错误')
     if timezone.is_naive(complaint_time): complaint_time = timezone.make_aware(complaint_time)
     orders = detail.get('complaint_order_info', [])
     order_no = orders[0].get('out_trade_no', '') if orders else ''
@@ -103,7 +110,7 @@ def sync_range(merchant, begin, end):
     begin, end = date.fromisoformat(begin), date.fromisoformat(end)
     if begin > end or (end - begin).days > 365: raise WechatError('同步日期需为一年以内的有效范围')
     gw = gateway_for(merchant)
-    count = 0
+    count, failed, first_error = 0, [], ''
     while begin <= end:
         stop, offset = min(end, begin + timedelta(days=29)), 0
         while True:
@@ -111,12 +118,19 @@ def sync_range(merchant, begin, end):
             rows = page.get('data', [])
             if not isinstance(rows, list): raise WechatError('投诉列表格式错误')
             for row in rows:
-                sync_one(merchant, row['complaint_id'], gw,
-                         scoped_row=row if merchant.access_mode == 'channel' else None)
-                count += 1
+                cid = row['complaint_id']
+                try:
+                    sync_one(merchant, cid, gw,
+                             scoped_row=row if merchant.access_mode == 'channel' else None)
+                    count += 1
+                except WechatError as error:
+                    if error.code != 'RESOURCE_NOT_EXISTS' and not isinstance(error, _ComplaintDataError): raise
+                    if not failed: first_error = str(error)
+                    failed.append(cid)
             offset += len(rows)
             if not rows or offset >= page.get('total_count', offset if len(rows) < 50 else offset + 1): break
         begin = stop + timedelta(days=1)
+    if failed: raise WechatError((f'部分投诉同步失败（首个原因：{first_error}）：' + '、'.join(failed))[:240])
     merchant.last_synced_at, merchant.last_sync_error = timezone.now(), ''
     merchant.save(update_fields=['last_synced_at', 'last_sync_error'])
     return count
@@ -138,8 +152,13 @@ def receive_channel_notification(channel, event_id, payload):
         event, created = ChannelNotification.objects.get_or_create(channel=channel, event_id=event_id,
                                                                     defaults={'payload': payload})
         if created:
-            Job.objects.create(channel=channel, kind='channel_detail',
-                payload={'complaint_id': payload['complaint_id']}, dedupe_key=f'channel:{channel.pk}:event:{event_id}')
+            if channel.enabled:
+                Job.objects.create(channel=channel, kind='channel_detail',
+                    payload={'complaint_id': payload['complaint_id']}, dedupe_key=f'channel:{channel.pk}:event:{event_id}')
+            else:
+                Job.objects.create(channel=channel, kind='channel_detail',
+                    payload={'complaint_id': payload['complaint_id']}, state='failed',
+                    error='渠道已停用，启用后可重试', finished_at=timezone.now(), dedupe_key=None)
     return event
 
 
@@ -193,6 +212,8 @@ def perform_operation(merchant, complaint, user, operation_id, kind, payload):
                 or existing.complaint_id != (complaint.pk if complaint else None)
                 or existing.kind != kind or existing.payload_hash != digest or existing.user_id != user.pk):
                 raise WechatError('操作标识与请求不一致')
+            if existing.state == 'failed': return existing, '该操作此前未成功，请重新填写提交'
+            if existing.state in ('pending', 'unknown'): return existing, '该操作结果未确认，请先回查'
             return existing, '该操作已提交，未重复发送'
         unresolved = Operation.objects.filter(**owner, complaint=complaint, state__in=['pending', 'unknown'])
         if unresolved.exists(): raise WechatError('此投诉或配置有结果未确认的操作，请先同步回查并在操作记录中确认')

@@ -5,6 +5,7 @@ import re
 import tempfile
 import time
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -199,6 +200,71 @@ class ChannelIntegrationTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.state, 'done')
         self.assertIsNone(job.dedupe_key)
+
+    def test_disabled_channel_callback_is_saved_as_failed_without_processing(self):
+        self.channel.enabled = False
+        self.channel.save(update_fields=['enabled'])
+        body = self.callback_body()
+        payload = {'complaint_id': 'CHANNEL-C001', 'action_type': 'USER_RESPONSE'}
+        before = timezone.now()
+        with patch('desk.views.verify_signature') as verify, patch('desk.views.decrypt_notification',
+                return_value=('CHANNEL-EVENT001', payload)) as decrypt, patch('httpx.Client.send') as send:
+            self.assertEqual(self.post_callback(body).status_code, 204)
+            self.assertFalse(Job.objects.filter(state='queued').exists())
+            self.assertFalse(process_job())
+            verify.assert_called_once()
+            decrypt.assert_called_once_with(self.channel, body, check_merchant=False)
+            send.assert_not_called()
+        event = ChannelNotification.objects.get()
+        self.assertEqual((event.channel_id, event.event_id, event.payload),
+                         (self.channel.pk, 'CHANNEL-EVENT001', payload))
+        job = Job.objects.get()
+        self.assertEqual((job.channel_id, job.kind, job.payload),
+                         (self.channel.pk, 'channel_detail', {'complaint_id': 'CHANNEL-C001'}))
+        self.assertIsNone(job.merchant_id)
+        self.assertEqual((job.state, job.error, job.attempts), ('failed', '渠道已停用，启用后可重试', 0))
+        self.assertIsNone(job.dedupe_key)
+        self.assertIsNone(job.locked_at)
+        self.assertIsNotNone(job.finished_at)
+        self.assertGreaterEqual(job.finished_at, before)
+        self.assertLessEqual(job.finished_at, timezone.now())
+
+    def test_disabled_channel_callback_is_deduplicated(self):
+        self.channel.enabled = False
+        self.channel.save(update_fields=['enabled'])
+        body = self.callback_body()
+        with patch('desk.views.verify_signature'), patch('desk.views.decrypt_notification',
+                return_value=('CHANNEL-EVENT001', {'complaint_id': 'CHANNEL-C001'})):
+            self.assertEqual(self.post_callback(body).status_code, 204)
+            self.assertEqual(self.post_callback(body).status_code, 204)
+        self.assertEqual(ChannelNotification.objects.count(), 1)
+        self.assertEqual(Job.objects.count(), 1)
+        self.assertEqual(Job.objects.get().state, 'failed')
+
+    def test_disabled_channel_callback_can_be_retried_after_enabling(self):
+        self.channel.enabled = False
+        self.channel.save(update_fields=['enabled'])
+        with patch('desk.views.verify_signature'), patch('desk.views.decrypt_notification',
+                return_value=('CHANNEL-EVENT001', {'complaint_id': 'CHANNEL-C001'})):
+            self.assertEqual(self.post_callback(self.callback_body()).status_code, 204)
+        failed = Job.objects.get(state='failed')
+        self.channel.enabled = True
+        self.channel.save(update_fields=['enabled'])
+        response = self.client.post(f'/channels/{self.channel.pk}/jobs/{failed.pk}/retry/')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Job.objects.count(), 2)
+        queued = Job.objects.get(state='queued')
+        self.assertNotEqual(queued.pk, failed.pk)
+        self.assertEqual((queued.channel_id, queued.kind, queued.payload),
+                         (failed.channel_id, failed.kind, failed.payload))
+        with patch('desk.services.sync_channel_notification', return_value='') as sync:
+            self.assertTrue(process_job())
+            sync.assert_called_once_with(self.channel, 'CHANNEL-C001')
+        queued.refresh_from_db()
+        self.assertEqual((queued.state, queued.attempts), ('done', 1))
+        self.assertIsNone(queued.dedupe_key)
+        failed.refresh_from_db()
+        self.assertEqual((failed.state, failed.attempts), ('failed', 0))
 
     def test_callback_tamper_wrong_key_and_storage_failure_do_not_ack(self):
         body = self.callback_body()
@@ -464,6 +530,35 @@ class ChannelIntegrationTests(TestCase):
         with self.assertRaisesMessage(WechatError, '已关联其他子商户'):
             sync_one(self.merchant, detail['complaint_id'], factory(self.merchant))
         self.assertEqual(list(Complaint.objects.values_list('merchant_id', flat=True)), [sibling.pk])
+
+    def test_channel_range_continues_after_complaint_bound_to_sibling(self):
+        sibling = Merchant.objects.create(name='同渠道另一商户', mch_id='1990000102', access_mode='channel', channel=self.channel)
+        Complaint.objects.create(merchant=sibling, complaint_id='BOUND-C001')
+        class Gateway:
+            merchant = self.merchant
+            def list_complaints(gw, begin, end, offset):
+                return {'data': [gw.complaint('BOUND-C001'), gw.complaint('NEXT-C002')], 'total_count': 2}
+            def complaint(gw, cid): return self.detail(cid, mch_id=self.channel.mch_id)
+            def negotiations(gw, cid, offset=0): return {'data': [], 'total_count': 0}
+        with patch('desk.services.gateway_for', return_value=Gateway()):
+            with self.assertRaisesMessage(WechatError, 'BOUND-C001'):
+                sync_range(self.merchant, '2026-10-01', '2026-10-01')
+        self.assertTrue(Complaint.objects.filter(merchant=self.merchant, complaint_id='NEXT-C002').exists())
+        self.assertEqual(Complaint.objects.get(complaint_id='BOUND-C001').merchant_id, sibling.pk)
+        self.merchant.refresh_from_db()
+        self.assertIsNone(self.merchant.last_synced_at)
+
+    def test_channel_notification_resolution_waits_five_minutes(self):
+        for state in ('pending', 'unknown'):
+            with self.subTest(state=state):
+                op = Operation.objects.create(channel=self.channel, user=self.user, kind='notify:PUT', payload_hash='x', state=state)
+                url = f'/operations/{op.pk}/resolve/'
+                response = self.client.post(url, {'outcome': 'failed', 'confirmed': 'on'}, follow=True)
+                self.assertContains(response, '请等待至少5分钟后核对')
+                op.refresh_from_db(); self.assertEqual(op.state, state)
+                Operation.objects.filter(pk=op.pk).update(created_at=timezone.now() - timedelta(minutes=6))
+                self.client.post(url, {'outcome': 'failed', 'confirmed': 'on'})
+                op.refresh_from_db(); self.assertEqual(op.state, 'failed')
 
     def test_channel_number_callback_routes_only_after_unique_submerchant_match(self):
         sibling = Merchant.objects.create(name='回调目标商户', mch_id='1990000102', access_mode='channel', channel=self.channel)
