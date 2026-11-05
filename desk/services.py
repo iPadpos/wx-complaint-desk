@@ -152,8 +152,13 @@ def receive_channel_notification(channel, event_id, payload):
         event, created = ChannelNotification.objects.get_or_create(channel=channel, event_id=event_id,
                                                                     defaults={'payload': payload})
         if created:
-            Job.objects.create(channel=channel, kind='channel_detail',
-                payload={'complaint_id': payload['complaint_id']}, dedupe_key=f'channel:{channel.pk}:event:{event_id}')
+            if channel.enabled:
+                Job.objects.create(channel=channel, kind='channel_detail',
+                    payload={'complaint_id': payload['complaint_id']}, dedupe_key=f'channel:{channel.pk}:event:{event_id}')
+            else:
+                Job.objects.create(channel=channel, kind='channel_detail',
+                    payload={'complaint_id': payload['complaint_id']}, state='failed',
+                    error='渠道已停用，启用后可重试', finished_at=timezone.now(), dedupe_key=None)
     return event
 
 

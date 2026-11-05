@@ -201,6 +201,71 @@ class ChannelIntegrationTests(TestCase):
         self.assertEqual(job.state, 'done')
         self.assertIsNone(job.dedupe_key)
 
+    def test_disabled_channel_callback_is_saved_as_failed_without_processing(self):
+        self.channel.enabled = False
+        self.channel.save(update_fields=['enabled'])
+        body = self.callback_body()
+        payload = {'complaint_id': 'CHANNEL-C001', 'action_type': 'USER_RESPONSE'}
+        before = timezone.now()
+        with patch('desk.views.verify_signature') as verify, patch('desk.views.decrypt_notification',
+                return_value=('CHANNEL-EVENT001', payload)) as decrypt, patch('httpx.Client.send') as send:
+            self.assertEqual(self.post_callback(body).status_code, 204)
+            self.assertFalse(Job.objects.filter(state='queued').exists())
+            self.assertFalse(process_job())
+            verify.assert_called_once()
+            decrypt.assert_called_once_with(self.channel, body, check_merchant=False)
+            send.assert_not_called()
+        event = ChannelNotification.objects.get()
+        self.assertEqual((event.channel_id, event.event_id, event.payload),
+                         (self.channel.pk, 'CHANNEL-EVENT001', payload))
+        job = Job.objects.get()
+        self.assertEqual((job.channel_id, job.kind, job.payload),
+                         (self.channel.pk, 'channel_detail', {'complaint_id': 'CHANNEL-C001'}))
+        self.assertIsNone(job.merchant_id)
+        self.assertEqual((job.state, job.error, job.attempts), ('failed', '渠道已停用，启用后可重试', 0))
+        self.assertIsNone(job.dedupe_key)
+        self.assertIsNone(job.locked_at)
+        self.assertIsNotNone(job.finished_at)
+        self.assertGreaterEqual(job.finished_at, before)
+        self.assertLessEqual(job.finished_at, timezone.now())
+
+    def test_disabled_channel_callback_is_deduplicated(self):
+        self.channel.enabled = False
+        self.channel.save(update_fields=['enabled'])
+        body = self.callback_body()
+        with patch('desk.views.verify_signature'), patch('desk.views.decrypt_notification',
+                return_value=('CHANNEL-EVENT001', {'complaint_id': 'CHANNEL-C001'})):
+            self.assertEqual(self.post_callback(body).status_code, 204)
+            self.assertEqual(self.post_callback(body).status_code, 204)
+        self.assertEqual(ChannelNotification.objects.count(), 1)
+        self.assertEqual(Job.objects.count(), 1)
+        self.assertEqual(Job.objects.get().state, 'failed')
+
+    def test_disabled_channel_callback_can_be_retried_after_enabling(self):
+        self.channel.enabled = False
+        self.channel.save(update_fields=['enabled'])
+        with patch('desk.views.verify_signature'), patch('desk.views.decrypt_notification',
+                return_value=('CHANNEL-EVENT001', {'complaint_id': 'CHANNEL-C001'})):
+            self.assertEqual(self.post_callback(self.callback_body()).status_code, 204)
+        failed = Job.objects.get(state='failed')
+        self.channel.enabled = True
+        self.channel.save(update_fields=['enabled'])
+        response = self.client.post(f'/channels/{self.channel.pk}/jobs/{failed.pk}/retry/')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Job.objects.count(), 2)
+        queued = Job.objects.get(state='queued')
+        self.assertNotEqual(queued.pk, failed.pk)
+        self.assertEqual((queued.channel_id, queued.kind, queued.payload),
+                         (failed.channel_id, failed.kind, failed.payload))
+        with patch('desk.services.sync_channel_notification', return_value='') as sync:
+            self.assertTrue(process_job())
+            sync.assert_called_once_with(self.channel, 'CHANNEL-C001')
+        queued.refresh_from_db()
+        self.assertEqual((queued.state, queued.attempts), ('done', 1))
+        self.assertIsNone(queued.dedupe_key)
+        failed.refresh_from_db()
+        self.assertEqual((failed.state, failed.attempts), ('failed', 0))
+
     def test_callback_tamper_wrong_key_and_storage_failure_do_not_ack(self):
         body = self.callback_body()
         headers = {'HTTP_' + k.upper().replace('-', '_'): v for k, v in self.headers(body).items()}
