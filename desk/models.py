@@ -30,6 +30,10 @@ class WechatChannel(models.Model):
     def callback_path(self):
         return f'/callbacks/channels/{self.mch_id}/'
 
+    @property
+    def violation_callback_path(self):
+        return f'/callbacks/channels/{self.mch_id}/violations/'
+
     def __str__(self):
         return f'{self.name} · {self.mch_id}'
 
@@ -134,6 +138,24 @@ class ChannelNotification(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['channel', 'event_id'], name='channel_event_unique')]
+
+
+class ViolationRecord(models.Model):
+    # 商户平台处置通知：渠道下全部子商户都会推送，按子商户号关联已接入商户。
+    EVENT_TYPES = [('VIOLATION.PUNISH', '处罚'), ('VIOLATION.INTERCEPT', '拦截'), ('VIOLATION.APPEAL', '申诉')]
+    channel = models.ForeignKey(WechatChannel, on_delete=models.PROTECT, related_name='violations')
+    event_id = models.CharField(max_length=100)
+    event_type = models.CharField(max_length=32, choices=EVENT_TYPES)
+    sub_mchid = models.CharField(max_length=32)
+    record_id = models.CharField(max_length=128)
+    punish_time = models.DateTimeField(null=True, blank=True)
+    payload = EncryptedJSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', '-id']
+        constraints = [models.UniqueConstraint(fields=['channel', 'event_id'], name='violation_event_unique')]
+        indexes = [models.Index(fields=['channel', 'sub_mchid', 'created_at'])]
 
 
 class Notification(models.Model):

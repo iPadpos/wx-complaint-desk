@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><h1>渠道违规通知配置</h1><p>{{ channel.name }} · {{ channel.mch_id }}；子商户被处罚、拦截或申诉状态变化时，微信推送至此地址。</p></div><a class="button" href="{% url 'channel_list' %}">返回渠道列表</a></div>
+<div class="panel form-panel narrow">
+  <p class="config-help">每个渠道号只能设置一个违规通知地址。先查询微信当前配置，确认现有地址未被其他系统使用，再创建、更新或删除。</p>
+  <p class="config-help">本系统接收路径：<span class="mono">{{ channel.violation_callback_path }}</span></p>
+  {% if remote != None %}<div class="remote-result"><b>微信当前配置</b><p>{{ remote.notify_url|default:'未配置通知地址' }}</p></div>{% endif %}
+  <form method="post">{% csrf_token %}{{ form.non_field_errors }}
+    {% for field in form %}{% if field.is_hidden %}{{ field }}{% else %}{% include 'desk/config_field.html' %}{% endif %}{% endfor %}
+    <div class="form-actions"><button class="primary">执行配置操作</button></div>
+  </form>
+</div>
+<section class="panel channel-jobs"><h2>最近收到的处置记录</h2>
+  {% for record in records %}<div class="channel-job"><span><b>{{ record.get_event_type_display }}</b> · <span class="mono">{{ record.sub_mchid }}</span> {{ record.merchant_name|default:'（未接入本系统）' }} · {{ record.payload.punish_plan|default:'—' }}<small>{{ record.payload.risk_description }} · 处置时间 {{ record.punish_time|date:'Y-m-d H:i'|default:'—' }} · 收到 {{ record.created_at|date:'m-d H:i' }}</small></span></div>
+  {% empty %}<p class="config-help">尚未收到违规通知。</p>{% endfor %}
+</section>
+{% endblock %}

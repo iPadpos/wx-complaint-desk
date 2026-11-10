@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-heading"><div><h1>风险处置 <span class="badge neutral">{{ merchant.mch_id }}</span></h1><p>{{ merchant.name }}；数据来自微信支付，申诉需商户本人在微信侧提交。</p></div><div class="heading-actions"><a class="primary" href="?query=1">查询微信管控情况</a><a class="button" href="{% url 'workspace' merchant.id %}">返回投诉</a></div></div>
+<div class="notice">如需申诉或解除限制，请登录「微信支付商户平台」或「微信支付商家助手」小程序 →「业务受限处理」页面办理。</div>
+{% if error %}<div class="notice amber"><b>查询失败</b>{{ error }}</div>{% endif %}
+{% if limitation %}<section class="panel form-panel">
+  <h2>当前管控情况</h2>
+  {% if limitation.functions %}<p class="error-text">被管控能力：{{ limitation.functions|join:'、' }}</p>{% else %}<p>当前未被管控。</p>{% endif %}
+  {% for row in limitation.reasons %}<div class="remote-result">
+    <b>{{ row.limitation_reason|default:row.reason_type }}</b>{% if row.delayed %} <span class="badge amber">延迟管控{% if row.limitation_start_date %}，预计 {{ row.limitation_start_date }} 开始{% endif %}</span>{% endif %}
+    <p>{{ row.limitation_reason_describe }}</p>
+    <p>原因类型：{{ row.reason_type|default:'—' }}；管控能力：{{ row.functions|join:'、'|default:'—' }}；管控时间：{{ row.limitation_date|default:'—' }}</p>
+    <p>解除方式：<b>{{ row.recover|default:'—' }}</b>{% if row.recover_way_param %}（单号 <span class="mono">{{ row.recover_way_param }}</span>）{% endif %}{% if row.help_url %} · <a href="{{ row.help_url }}" target="_blank" rel="noopener noreferrer">帮助说明</a>{% endif %}</p>
+    <p class="muted">管控单号 <span class="mono">{{ row.limitation_case_id|default:'—' }}</span></p>
+  </div>{% endfor %}
+</section>{% endif %}
+<section class="panel channel-jobs"><h2>违规 / 申诉通知记录</h2>
+  {% for record in records %}<div class="channel-job"><span><b>{{ record.get_event_type_display }}</b> · {{ record.payload.punish_plan|default:'—' }}<small>{{ record.payload.risk_description }}{% if record.payload.punish_description %} · {{ record.payload.punish_description }}{% endif %} · 处置时间 {{ record.punish_time|date:'Y-m-d H:i'|default:'—' }} · 记录号 {{ record.record_id }}</small></span></div>
+  {% empty %}<p class="config-help">尚未收到该商户的违规通知。需先在渠道账号中配置违规通知地址。</p>{% endfor %}
+</section>
+{% endblock %}
