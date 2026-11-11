@@ -9,7 +9,7 @@
     <td><b>{{ row.name }}</b></td><td>{{ row.provider|default:'—' }}</td><td class="mono">{{ row.mch_id }}</td><td>{{ row.merchant_count }}</td>
     <td>{% if row.api_v3_key %}<span class="badge processed">已保存</span>{% else %}<span class="muted">未配置</span>{% endif %}</td>
     <td>{% if row.enabled %}<span class="status-dot"></span> 已启用{% else %}<span class="muted">已停用</span>{% endif %}</td>
-    <td class="table-actions">{% if perms.desk.configure_notification %}<a href="{% url 'channel_notifications' row.id %}">通知配置</a>{% endif %}{% if perms.desk.change_wechatchannel %}<a href="{% url 'channel_edit' row.id %}">编辑</a>{% endif %}{% if perms.desk.delete_wechatchannel %}<a class="danger-text" href="{% url 'channel_delete' row.id %}">删除</a>{% endif %}</td>
+    <td class="table-actions">{% if perms.desk.configure_notification %}<a href="{% url 'channel_notifications' row.id %}">通知配置</a><a href="{% url 'channel_violations' row.id %}">违规通知</a>{% endif %}{% if perms.desk.change_wechatchannel %}<a href="{% url 'channel_edit' row.id %}">编辑</a>{% endif %}{% if perms.desk.delete_wechatchannel %}<a class="danger-text" href="{% url 'channel_delete' row.id %}">删除</a>{% endif %}</td>
   </tr>{% empty %}<tr><td colspan="7" class="empty">暂无渠道账号。添加后，可在新增商户时选择关联。</td></tr>{% endfor %}</tbody>
 </table></div>
 {% endblock %}

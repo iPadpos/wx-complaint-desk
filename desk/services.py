@@ -7,7 +7,7 @@ from urllib.parse import unquote, urlsplit
 from django.db import transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from .models import ChannelNotification, Complaint, Job, Media, Merchant, Notification, Operation, WechatChannel
+from .models import ChannelNotification, Complaint, Job, Media, Merchant, Notification, Operation, ViolationRecord, WechatChannel
 from .wechat import WechatError, gateway_for
 
 
@@ -162,6 +162,16 @@ def receive_channel_notification(channel, event_id, payload):
     return event
 
 
+def receive_violation_notification(channel, event_id, event_type, payload):
+    # 处置记录无需回查接口，直接落库；重复通知按通知 ID 去重。渠道停用时仍保存。
+    try: punish_time = parse_datetime(payload.get('punish_time') or '')
+    except (TypeError, ValueError): punish_time = None
+    event, _ = ViolationRecord.objects.get_or_create(channel=channel, event_id=event_id, defaults={
+        'event_type': event_type, 'sub_mchid': payload['sub_mchid'], 'record_id': payload['record_id'],
+        'punish_time': punish_time, 'payload': payload})
+    return event
+
+
 def sync_channel_notification(channel, cid):
     gw = gateway_for(channel)
     detail = gw.complaint(cid)
@@ -238,6 +248,8 @@ def perform_operation(merchant, complaint, user, operation_id, kind, payload):
             outbound = ({**payload, 'complainted_mchid': latest['complainted_mchid']}
                         if verified_scope is not None and 'complainted_mchid' in payload else payload)
             gw.action(complaint.complaint_id, kind, outbound)
+        elif kind.startswith('violation:'):
+            gw.violation_notification_config(kind.split(':', 1)[1], payload.get('url', ''))
         else:
             gw.notification_config(kind.split(':', 1)[1], payload.get('url', ''))
         operation.state, operation.result, operation.request_id = 'success', '微信已接受操作', gw.request_id

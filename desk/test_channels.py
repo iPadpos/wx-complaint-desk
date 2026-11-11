@@ -20,7 +20,7 @@ from django.utils import timezone
 from PIL import Image
 
 from .forms import ChannelForm, ImmediateForm, MerchantForm, NotificationForm, RefundForm, ReplyForm
-from .models import ChannelNotification, Complaint, Job, Merchant, Operation, WechatChannel
+from .models import ChannelNotification, Complaint, Job, Merchant, Operation, ViolationRecord, WechatChannel
 from .services import perform_operation, process_job, receive_channel_notification, sync_one, sync_range
 from .wechat import WechatError, WechatGateway, configuration_errors
 
@@ -619,3 +619,110 @@ class ChannelIntegrationTests(TestCase):
             complaint.refresh_from_db()
             self.assertEqual(complaint.merchant_id, self.merchant.pk)
             self.assertEqual(complaint.detail['complainted_mchid'], self.channel.mch_id)
+
+    # ---- 商户平台处置通知 / 管控查询 ----
+    def violation_body(self, payload=None, event_id='VIOLATION-EV001', event_type='VIOLATION.PUNISH'):
+        nonce = 'abcdefghijkl'
+        raw = json.dumps(payload or {'sub_mchid': self.merchant.mch_id, 'company_name': '测试公司',
+            'record_id': 'REC001', 'punish_plan': '关闭支付权限', 'punish_time': '2026-11-10T10:00:00+08:00',
+            'punish_description': '测试描述', 'risk_type': 'FRAUD', 'risk_description': '涉嫌欺诈'}).encode()
+        cipher = AESGCM(self.channel.api_v3_key.encode()).encrypt(nonce.encode(), raw, b'')
+        return json.dumps({'id': event_id, 'event_type': event_type, 'resource_type': 'encrypt-resource',
+            'resource': {'algorithm': 'AEAD_AES_256_GCM', 'original_type': 'violation', 'nonce': nonce,
+                         'associated_data': '', 'ciphertext': base64.b64encode(cipher).decode()}}).encode()
+
+    def post_violation(self, body, signed_body=None):
+        headers = {'HTTP_' + k.upper().replace('-', '_'): v for k, v in self.headers(signed_body or body).items()}
+        return self.client.post(self.channel.violation_callback_path, body, content_type='application/json', **headers)
+
+    def test_violation_callback_saves_once_and_shows_for_matched_merchant(self):
+        body = self.violation_body()
+        self.assertEqual(self.post_violation(body).status_code, 204)
+        self.assertEqual(self.post_violation(body).status_code, 204)
+        record = ViolationRecord.objects.get()
+        self.assertEqual((record.channel_id, record.sub_mchid, record.event_type, record.record_id),
+                         (self.channel.pk, self.merchant.mch_id, 'VIOLATION.PUNISH', 'REC001'))
+        self.assertIsNotNone(record.punish_time)
+        # 同一记录的申诉状态变化是新通知，需另存。
+        self.assertEqual(self.post_violation(self.violation_body(event_id='VIOLATION-EV002',
+                         event_type='VIOLATION.APPEAL')).status_code, 204)
+        self.assertEqual(ViolationRecord.objects.count(), 2)
+        page = self.client.get(f'/merchants/{self.merchant.pk}/')
+        self.assertContains(page, '近90天收到 2 条违规/申诉通知')
+        risk = self.client.get(f'/merchants/{self.merchant.pk}/risk/')
+        self.assertContains(risk, '关闭支付权限')
+        self.assertContains(risk, '申诉')
+        self.assertNotContains(self.client.get(f'/merchants/{self.direct.pk}/'), '违规/申诉通知')
+        self.assertEqual(self.client.get(f'/merchants/{self.direct.pk}/risk/').status_code, 404)
+
+    def test_violation_callback_rejects_bad_signature_type_and_keeps_unmatched_or_disabled(self):
+        body = self.violation_body()
+        self.assertEqual(self.post_violation(body, signed_body=b'other').status_code, 400)
+        self.assertEqual(self.post_violation(self.violation_body(event_type='COMPLAINT.CREATE')).status_code, 400)
+        self.assertEqual(self.post_violation(self.violation_body({'sub_mchid': '1'})).status_code, 400)
+        self.assertFalse(ViolationRecord.objects.exists())
+        self.channel.enabled = False
+        self.channel.save()
+        other = self.violation_body({'sub_mchid': '1990009999', 'record_id': 'REC9', 'punish_plan': '拦截交易'})
+        self.assertEqual(self.post_violation(other).status_code, 204)
+        self.assertEqual(ViolationRecord.objects.get().sub_mchid, '1990009999')
+        with patch('desk.views.gateway_for'):
+            page = self.client.get(f'/channels/{self.channel.pk}/violations/')
+        self.assertContains(page, '未接入本系统')
+        self.assertContains(page, '拦截交易')
+        with patch('desk.views.receive_violation_notification', side_effect=DatabaseError):
+            self.assertEqual(self.post_violation(self.violation_body(event_id='EV-DB')).status_code, 503)
+
+    def test_violation_notification_configuration_queries_before_create(self):
+        url = f'/channels/{self.channel.pk}/violations/'
+        target = 'https://local-test.example' + self.channel.violation_callback_path
+        calls, remote = [], {}
+        def handle(request):
+            calls.append(request)
+            self.assert_signature(request, self.channel, 'channel')
+            self.assertEqual(request.url.path, '/v3/merchant-risk-manage/violation-notifications')
+            if request.method == 'GET' and not remote:
+                return self.response({'code': 'NOT_FOUND', 'message': '查询的通知回调不存在'}, 404)
+            if request.method == 'POST': remote['notify_url'] = json.loads(request.content)['notify_url']
+            return self.response(remote)
+        factory = self.factory(handle)
+        with patch('desk.views.gateway_for', side_effect=factory), patch('desk.services.gateway_for', side_effect=factory):
+            data = {'action': 'POST', 'confirmed': True, 'operation_id': uuid.uuid4(), 'url': target}
+            self.assertContains(self.client.post(url, data), '请先查询微信当前通知配置')
+            self.assertEqual(calls, [])
+            bad = {**data, 'url': 'https://local-test.example' + self.channel.callback_path}
+            self.assertFalse(self.client.post(url, bad).context['form'].is_valid())
+            self.assertContains(self.client.post(url, {'action': 'GET', 'operation_id': uuid.uuid4()}), '未配置通知地址')
+            response = self.client.post(url, data)
+            self.assertContains(response, target)
+        self.assertEqual(len([c for c in calls if c.method == 'POST']), 1)
+        operation = Operation.objects.get()
+        self.assertEqual((operation.kind, operation.state, operation.channel_id), ('violation:POST', 'success', self.channel.pk))
+        with self.assertRaises(WechatError): factory(self.merchant).violation_notification_config()
+        with self.assertRaises(WechatError): factory(self.direct).violation_notification_config()
+
+    def test_merchant_risk_queries_limitations_with_channel_signature(self):
+        url = f'/merchants/{self.merchant.pk}/risk/'
+        calls = []
+        def handle(request):
+            calls.append(request)
+            self.assert_signature(request, self.channel, 'channel')
+            self.assertEqual(request.url.path, f'/v3/mch-operation-manage/merchant-limitations/sub-mchid/{self.merchant.mch_id}')
+            return self.response({'mchid': self.merchant.mch_id, 'limited_functions': ['NO_TRANSACTION'],
+                'recovery_specifications': [{'limitation_case_id': 'P001', 'limitation_reason_type': 'RISK_ABNORMAL',
+                    'limitation_reason': '涉嫌交易特征异常', 'relate_limitations': ['NO_TRANSACTION'],
+                    'recover_way': 'SUBMIT_INFORMATION_FOR_APPEAL', 'recover_way_param': 'M123',
+                    'recover_help_url': 'javascript:alert(1)', 'limitation_action_type': 'LIMIT_ACTION_TYPE_IMMEDIATE_CONTROL'}]})
+        factory = self.factory(handle)
+        with patch('desk.views.gateway_for', side_effect=factory):
+            self.assertNotContains(self.client.get(url), '当前管控情况')
+            self.assertEqual(calls, [])
+            response = self.client.get(url + '?query=1')
+        self.assertContains(response, '关闭收单')
+        self.assertContains(response, '提交相关信息申诉')
+        self.assertContains(response, 'M123')
+        self.assertNotContains(response, 'javascript:')
+        def denied(request): return self.response({'code': 'INVALID_REQUEST', 'message': '身份校验不通过'}, 400)
+        with patch('desk.views.gateway_for', side_effect=self.factory(denied)):
+            self.assertContains(self.client.get(url + '?query=1'), '普通服务商')
+        with self.assertRaises(WechatError): self.factory(handle)(self.direct).limitations()

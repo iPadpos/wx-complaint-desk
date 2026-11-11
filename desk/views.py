@@ -1,5 +1,6 @@
 import uuid
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
@@ -15,11 +16,13 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_GET, require_POST
 
-from .forms import ChannelForm, ImmediateForm, MerchantForm, NotificationForm, RefundForm, ReplyForm, SyncForm
+from .forms import ChannelForm, ImmediateForm, MerchantForm, NotificationForm, RefundForm, ReplyForm, SyncForm, ViolationNotificationForm
 from .credentials import CredentialStorageError, save_channel_configuration, save_merchant_configuration
-from .models import Complaint, Job, Media, Merchant, Operation, WechatChannel
-from .services import allowed_media, enqueue, media_ids, perform_operation, receive_channel_notification, receive_notification
-from .wechat import WechatError, configuration_errors, decrypt_notification, gateway_for, verify_signature
+from .models import Complaint, Job, Media, Merchant, Operation, ViolationRecord, WechatChannel
+from .services import (allowed_media, enqueue, media_ids, perform_operation, receive_channel_notification,
+                       receive_notification, receive_violation_notification)
+from .wechat import (WechatError, configuration_errors, decrypt_notification, decrypt_violation_notification,
+                     gateway_for, verify_signature)
 
 
 def recent_pending(prefix=''):
@@ -65,6 +68,9 @@ def workspace(request, merchant_id=None):
                sync_form=SyncForm(initial={'begin': today - timedelta(days=2), 'end': today}),
                query=query, states=Complaint.STATES, operation_id=uuid.uuid4(),
                jobs=Job.objects.filter(merchant=merchant).order_by('-id')[:5])
+    if merchant.access_mode == 'channel':
+        recent = merchant_violations(merchant).filter(created_at__gte=timezone.now() - timedelta(days=90))
+        ctx.update(violation_count=recent.count(), latest_violation=recent.first())
     params = request.GET.copy()
     for key in ['page', 'complaint']: params.pop(key, None)
     ctx['filter_query'] = params.urlencode()
@@ -385,6 +391,111 @@ def retry_channel_job(request, channel_id, job_id):
     return redirect('channel_notifications', channel_id=channel_id)
 
 
+def merchant_violations(merchant):
+    return ViolationRecord.objects.filter(channel_id=merchant.channel_id, sub_mchid=merchant.mch_id)
+
+
+@login_required
+@permission_required('desk.view_wechatchannel', raise_exception=True)
+@permission_required('desk.configure_notification', raise_exception=True)
+def channel_violations(request, channel_id):
+    channel = get_object_or_404(WechatChannel, pk=channel_id)
+    # 默认地址沿用渠道投诉通知地址的域名，不信任请求 Host 头。
+    host = urlsplit(channel.notify_url).netloc
+    form = ViolationNotificationForm(request.POST or None, merchant=channel,
+                                     initial={'url': f'https://{host}{channel.violation_callback_path}' if host else ''})
+    remote = None
+    snapshot_key = f'channel_violation:{channel.pk}'
+
+    def query_remote(gw):
+        # 未配置时微信返回 404 NOT_FOUND。
+        try: return gw.violation_notification_config()
+        except WechatError as error:
+            if error.code not in ('NOT_FOUND', 'RESOURCE_NOT_EXISTS'): raise
+            return {}
+
+    if request.method == 'POST' and form.is_valid():
+        data = form.cleaned_data
+        try:
+            gw = gateway_for(channel)
+            if data['action'] == 'GET':
+                remote = query_remote(gw)
+                request.session[snapshot_key] = {'url': remote.get('notify_url', '')}
+            else:
+                snapshot = request.session.get(snapshot_key)
+                if snapshot is None: raise WechatError('请先查询微信当前通知配置，再确认是否需要修改')
+                remote = query_remote(gw)
+                if remote.get('notify_url', '') != snapshot['url']:
+                    request.session.pop(snapshot_key, None)
+                    raise WechatError('微信通知配置已变化，请重新查询并核对现有地址用途')
+                op, msg = perform_operation(channel, None, request.user, data['operation_id'],
+                    'violation:' + data['action'], {'url': data['url']} if data['action'] != 'DELETE' else {})
+                (messages.success if op.state == 'success' else messages.error)(request, msg)
+                request.session.pop(snapshot_key, None)
+                if op.state == 'success':
+                    try: remote = query_remote(gw)
+                    except WechatError: messages.info(request, '微信已接受操作，配置回查暂未成功，请再次查询')
+                form = ViolationNotificationForm(merchant=channel, initial={'url': data['url']})
+        except WechatError as error: form.add_error(None, str(error))
+    records = list(channel.violations.all()[:30])
+    names = dict(Merchant.objects.filter(channel=channel, access_mode='channel').values_list('mch_id', 'name'))
+    for record in records: record.merchant_name = names.get(record.sub_mchid, '')
+    return render(request, 'desk/channel_violations.html', {**context(), 'menu': 'merchants',
+        'channel': channel, 'form': form, 'remote': remote, 'records': records})
+
+
+LIMITED_FUNCTIONS = {'NO_TRANSACTION_AND_RECHARGE': '关闭收单和充值', 'NO_PAYMENT': '关闭付款', 'NO_WITHDRAWAL': '关闭提现',
+    'NO_REFUND': '关闭退款', 'NO_TRANSACTION': '关闭收单', 'NO_PROFIT_SHARING': '关闭分账分出',
+    'NO_PAYMENT_POINT_COMPLETE_ORDER': '关闭支付分服务结单'}
+LIMITATION_REASONS = {'LICENSE_ABNORMAL': '经营证照异常', 'NO_TRADE': '无交易', 'SETTLE_ACCOUNT_ABNORMAL': '结算信息异常',
+    'RISK_ABNORMAL': '风险异常', 'OTHER': '其他', 'INSPECT_ABNORMAL': '巡检异常',
+    'INVALID_REPRESENTATIVE_INFORMATION': '法定代表人/负责人资料异常', 'INVALID_BUSINESS_STATUS': '经营状态异常',
+    'INVALID_BUSINESS_LICENSE': '经营证照资料异常', 'INVALID_BENEFICIARY_INFORMATION': '受益所有人资料异常'}
+RECOVER_WAYS = {'IRRECOVERABLE': '不可恢复', 'MODIFY_SUBJECT_INFORMATION': '修改主体资料',
+    'MODIFY_SETTLE_ACCOUNT_INFORMATION': '修改结算银行账户', 'VERIFY_INACTIVE_MERCHANT_IDENTITY': '核实商户身份',
+    'SUBMIT_OFFLINE_BUSINESS_SCENARIO_INFORMATION': '提交线下经营场景信息', 'SUBMIT_INFORMATION_FOR_APPEAL': '提交相关信息申诉',
+    'RESOLVE_TRANSACTION_DISPUTES': '解决交易纠纷', 'MODIFY_ADMINISTRATOR_INFORMATION': '修改超级管理员',
+    'CALL_CUSTOMER_SERVICE_AT_95017': '拨打微信支付客服电话95017', 'UPDATE_BUSINESS_SCENARIO_INFORMATION': '补充经营场景信息',
+    'SUBMIT_CDD_INFORMATION': '填写尽调信息', 'WAITING_FOR_PLATFORM_REVIEW': '等待平台审核',
+    'SUBMIT_UBO_INFORMATION': '补充受益所有人信息', 'SIGN_ANTI_FRAUD_PLEDGE_AND_VERIFY_FACE': '签署反诈承诺书并刷脸核实身份',
+    'CONTACT_APPROPRIATE_AUTHORITY_FOR_CONSULTATION': '联系有权机关咨询', 'MODIFY_ABBREVIATION_INFORMATION': '修改商户简称',
+    'CONFIRM_BUSINESS_TYPE': '确认经营类型', 'SUBMIT_ONLINE_BUSINESS_SCENARIO_INFORMATION': '提交线上经营场景信息',
+    'CONTACT_SERVICE_PROVIDER': '联系服务商处理', 'UPDATE_DEVICE_BUSINESS_ADDRESS': '补充设备经营地址信息'}
+
+
+def _functions(codes, other=''):
+    names = [LIMITED_FUNCTIONS.get(code, code) for code in codes or [] if isinstance(code, str)]
+    if isinstance(other, str) and other: names.append(other)
+    return names
+
+
+@login_required
+@permission_required('desk.view_complaint', raise_exception=True)
+@require_GET
+def merchant_risk(request, merchant_id):
+    merchant = get_object_or_404(Merchant, pk=merchant_id, access_mode='channel')
+    limitation, error = None, ''
+    if request.GET.get('query') == '1':
+        try:
+            data = gateway_for(merchant).limitations()
+            if data.get('mchid', merchant.mch_id) != merchant.mch_id: raise WechatError('微信返回的商户号不匹配')
+            reasons = []
+            for row in data.get('recovery_specifications') or []:
+                if not isinstance(row, dict): continue
+                reasons.append({**row, 'reason_type': LIMITATION_REASONS.get(row.get('limitation_reason_type'), row.get('limitation_reason_type', '')),
+                    'functions': _functions(row.get('relate_limitations'), row.get('other_relate_limitations')),
+                    'recover': RECOVER_WAYS.get(row.get('recover_way'), row.get('recover_way', '')),
+                    'help_url': row['recover_help_url'] if str(row.get('recover_help_url', '')).startswith('https://') else '',
+                    'delayed': row.get('limitation_action_type') == 'LIMIT_ACTION_TYPE_DELAY_CONTROL'})
+            limitation = {'functions': _functions(data.get('limited_functions'), data.get('other_limited_functions')),
+                          'reasons': reasons}
+        except WechatError as exc:
+            error = str(exc)
+            if exc.code == 'INVALID_REQUEST': error += '（渠道号须为普通服务商且与该商户存在受理关系）'
+    return render(request, 'desk/merchant_risk.html', {**context(merchant), 'limitation': limitation,
+        'error': error, 'records': merchant_violations(merchant)[:50]})
+
+
 @login_required
 @require_POST
 def upload(request, merchant_id, complaint_pk):
@@ -443,6 +554,20 @@ def channel_callback(request, mch_id):
     return HttpResponse(status=204)
 
 
+@csrf_exempt
+@require_POST
+def channel_violation_callback(request, mch_id):
+    channel = get_object_or_404(WechatChannel, mch_id=mch_id)
+    if len(request.body) > 1024 * 1024: return JsonResponse({'code': 'FAIL', 'message': '包体超过限制'}, status=413)
+    try:
+        verify_signature(channel, request.headers, request.body)
+        event_id, event_type, data = decrypt_violation_notification(channel, request.body)
+        receive_violation_notification(channel, event_id, event_type, data)
+    except WechatError: return JsonResponse({'code': 'FAIL', 'message': '验签或解密失败'}, status=400)
+    except DatabaseError: return JsonResponse({'code': 'FAIL', 'message': '通知暂未可靠保存'}, status=503)
+    return HttpResponse(status=204)
+
+
 @login_required
 @permission_required('desk.view_operation', raise_exception=True)
 def operations(request):
@@ -459,7 +584,7 @@ def resolve_operation(request, operation_id):
     if request.method == 'POST':
         if operation.state not in ('pending', 'unknown') or request.POST.get('outcome') not in ('success', 'failed'):
             return HttpResponse('操作状态不允许确认', status=400)
-        if ((operation.state == 'pending' or (not operation.complaint_id and operation.kind.startswith('notify:'))) and
+        if ((operation.state == 'pending' or (not operation.complaint_id and operation.kind.startswith(('notify:', 'violation:')))) and
             operation.created_at > timezone.now() - timedelta(minutes=5)):
             messages.error(request, '操作可能仍在执行，请等待至少5分钟后核对')
         elif operation.complaint and operation.complaint.synced_at < operation.created_at:

@@ -99,22 +99,42 @@ def verify_signature(merchant, headers, body):
         raise WechatError('微信签名验证失败，请核对验签 ID、文件及系统时间') from error
 
 
+def _decrypt_envelope(account, body):
+    envelope = json.loads(body)
+    resource = envelope['resource']
+    if resource['algorithm'] != 'AEAD_AES_256_GCM': raise ValueError('不支持的算法')
+    clear = AESGCM(account.api_v3_key.encode()).decrypt(
+        resource['nonce'].encode(), base64.b64decode(resource['ciphertext'], validate=True),
+        resource.get('associated_data', '').encode())
+    event_id = envelope['id']
+    if not isinstance(event_id, str) or not 1 <= len(event_id) <= 100: raise ValueError('通知ID无效')
+    return envelope, event_id, json.loads(clear)
+
+
 def decrypt_notification(merchant, body, *, check_merchant=True):
     try:
-        envelope = json.loads(body)
-        resource = envelope['resource']
-        if resource['algorithm'] != 'AEAD_AES_256_GCM': raise ValueError('不支持的算法')
-        clear = AESGCM(merchant.api_v3_key.encode()).decrypt(
-            resource['nonce'].encode(), base64.b64decode(resource['ciphertext'], validate=True),
-            resource.get('associated_data', '').encode())
-        data = json.loads(clear)
-        event_id = envelope['id']
-        if not isinstance(event_id, str) or not 1 <= len(event_id) <= 100: raise ValueError('通知ID无效')
+        _, event_id, data = _decrypt_envelope(merchant, body)
         if not isinstance(data.get('complaint_id'), str) or not 1 <= len(data['complaint_id']) <= 64:
             raise ValueError('投诉ID无效')
         if check_merchant and data.get('complainted_mchid', merchant.mch_id) != merchant.mch_id:
             raise ValueError('商户不匹配')
         return event_id, data
+    except Exception as error:
+        raise WechatError('微信通知解密失败或格式不正确') from error
+
+
+VIOLATION_EVENTS = ('VIOLATION.PUNISH', 'VIOLATION.INTERCEPT', 'VIOLATION.APPEAL')
+
+
+def decrypt_violation_notification(channel, body):
+    """商户平台处置记录回调：返回通知 ID、事件类型和解密后的处置记录。"""
+    try:
+        envelope, event_id, data = _decrypt_envelope(channel, body)
+        if envelope.get('event_type') not in VIOLATION_EVENTS: raise ValueError('事件类型无效')
+        if not isinstance(data, dict): raise ValueError('处置记录格式无效')
+        for key, limit in (('sub_mchid', 32), ('record_id', 128)):
+            if not isinstance(data.get(key), str) or not 1 <= len(data[key]) <= limit: raise ValueError(key + '无效')
+        return event_id, envelope['event_type'], data
     except Exception as error:
         raise WechatError('微信通知解密失败或格式不正确') from error
 
@@ -221,6 +241,20 @@ class WechatGateway:
             raise WechatError('渠道投诉通知请在渠道账号中统一配置')
         return self.request(method, '/v3/merchant-service/complaint-notifications',
                             {'url': url} if method in ('POST', 'PUT') else None)
+
+    def violation_notification_config(self, method='GET', url=''):
+        # 商户平台处置通知仅服务商（渠道账号）可配置，每个服务商只有一个地址。
+        if self.account is not self.merchant or hasattr(self.merchant, 'access_mode'):
+            raise WechatError('违规通知只能在渠道账号中配置')
+        return self.request(method, '/v3/merchant-risk-manage/violation-notifications',
+                            {'notify_url': url} if method in ('POST', 'PUT') else None)
+
+    def limitations(self):
+        # 查询渠道子商户的管控情况，由渠道账号代为调用。
+        if self.account is self.merchant:
+            raise WechatError('仅渠道代调用商户可查询管控情况')
+        return self.request('GET', '/v3/mch-operation-manage/merchant-limitations/sub-mchid/'
+                            + quote(self.merchant.mch_id, safe=''))
 
     def upload(self, filename, raw):
         mime = valid_image(raw)

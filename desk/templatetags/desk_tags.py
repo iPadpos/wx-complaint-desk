@@ -36,7 +36,8 @@ def operate_type(value):
 @register.filter
 def operation_kind(value):
     return {'reply': '回复用户', 'immediate': '即时服务回复', 'complete': '反馈处理完成', 'refund': '退款审批',
-            'notify:POST': '创建通知配置', 'notify:PUT': '更新通知配置', 'notify:DELETE': '删除通知配置'}.get(value, value)
+            'notify:POST': '创建通知配置', 'notify:PUT': '更新通知配置', 'notify:DELETE': '删除通知配置',
+            'violation:POST': '创建违规通知配置', 'violation:PUT': '更新违规通知配置', 'violation:DELETE': '删除违规通知配置'}.get(value, value)
 
 
 @register.filter

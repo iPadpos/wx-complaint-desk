@@ -448,3 +448,18 @@ class NotificationForm(forms.Form):
         if data.get('action') != 'GET' and not data.get('confirmed'):
             self.add_error('confirmed', '请先核对现有回调地址用途')
         return data
+
+
+class ViolationNotificationForm(NotificationForm):
+    """渠道违规通知地址配置：路径固定为渠道的违规回调路径。"""
+
+    def clean(self):
+        data = forms.Form.clean(self)
+        if data.get('action') in ('POST', 'PUT'):
+            path = self.merchant.violation_callback_path
+            p = urlsplit(data.get('url', ''))
+            if p.scheme != 'https' or not p.netloc or p.query or p.fragment or p.username or p.path != path:
+                self.add_error('url', f'须为公网 HTTPS 地址，路径为 {path}，无查询参数')
+        if data.get('action') != 'GET' and not data.get('confirmed'):
+            self.add_error('confirmed', '请先核对现有回调地址用途')
+        return data
