@@ -1,10 +1,10 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="page-heading"><div><h1>风险处置 <span class="badge neutral">{{ merchant.mch_id }}</span></h1><p>{{ merchant.name }}；数据来自微信支付，申诉需商户本人在微信侧提交。</p></div><div class="heading-actions"><a class="primary" href="?query=1">查询微信管控情况</a><a class="button" href="{% url 'workspace' merchant.id %}">返回投诉</a></div></div>
+<div class="page-heading"><div><h1>风险处置 <span class="badge neutral">{{ merchant.mch_id }}</span></h1><p>{{ merchant.name }}；数据来自微信支付，申诉需商户本人在微信侧提交。</p></div><div class="heading-actions"><a class="primary" href="{% url 'merchant_risk' merchant.id %}">重新查询</a><a class="button" href="{% url 'workspace' merchant.id %}">返回投诉</a></div></div>
 <div class="notice">如需申诉或解除限制，请登录「微信支付商户平台」或「微信支付商家助手」小程序 →「业务受限处理」页面办理。</div>
 {% if error %}<div class="notice amber"><b>查询失败</b>{{ error }}</div>{% endif %}
 {% if limitation %}<section class="panel form-panel">
-  <h2>当前管控情况</h2>
+  <h2>当前管控情况 <small class="muted">查询于 {{ queried_at|date:'Y-m-d H:i:s' }}</small></h2>
   {% if limitation.functions %}<p class="error-text">被管控能力：{{ limitation.functions|join:'、' }}</p>{% else %}<p>当前未被管控。</p>{% endif %}
   {% for row in limitation.reasons %}<div class="remote-result">
     <b>{{ row.limitation_reason|default:row.reason_type }}</b>{% if row.delayed %} <span class="badge amber">延迟管控{% if row.limitation_start_date %}，预计 {{ row.limitation_start_date }} 开始{% endif %}</span>{% endif %}
