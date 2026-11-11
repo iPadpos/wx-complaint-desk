@@ -474,26 +474,26 @@ def _functions(codes, other=''):
 @require_GET
 def merchant_risk(request, merchant_id):
     merchant = get_object_or_404(Merchant, pk=merchant_id, access_mode='channel')
-    limitation, error = None, ''
-    if request.GET.get('query') == '1':
-        try:
-            data = gateway_for(merchant).limitations()
-            if data.get('mchid', merchant.mch_id) != merchant.mch_id: raise WechatError('微信返回的商户号不匹配')
-            reasons = []
-            for row in data.get('recovery_specifications') or []:
-                if not isinstance(row, dict): continue
-                reasons.append({**row, 'reason_type': LIMITATION_REASONS.get(row.get('limitation_reason_type'), row.get('limitation_reason_type', '')),
-                    'functions': _functions(row.get('relate_limitations'), row.get('other_relate_limitations')),
-                    'recover': RECOVER_WAYS.get(row.get('recover_way'), row.get('recover_way', '')),
-                    'help_url': row['recover_help_url'] if str(row.get('recover_help_url', '')).startswith('https://') else '',
-                    'delayed': row.get('limitation_action_type') == 'LIMIT_ACTION_TYPE_DELAY_CONTROL'})
-            limitation = {'functions': _functions(data.get('limited_functions'), data.get('other_limited_functions')),
-                          'reasons': reasons}
-        except WechatError as exc:
-            error = str(exc)
-            if exc.code == 'INVALID_REQUEST': error += '（渠道号须为普通服务商且与该商户存在受理关系）'
+    # 每次打开页面实时查询微信管控情况，不落库。
+    limitation, error, queried_at = None, '', timezone.now()
+    try:
+        data = gateway_for(merchant).limitations()
+        if data.get('mchid', merchant.mch_id) != merchant.mch_id: raise WechatError('微信返回的商户号不匹配')
+        reasons = []
+        for row in data.get('recovery_specifications') or []:
+            if not isinstance(row, dict): continue
+            reasons.append({**row, 'reason_type': LIMITATION_REASONS.get(row.get('limitation_reason_type'), row.get('limitation_reason_type', '')),
+                'functions': _functions(row.get('relate_limitations'), row.get('other_relate_limitations')),
+                'recover': RECOVER_WAYS.get(row.get('recover_way'), row.get('recover_way', '')),
+                'help_url': row['recover_help_url'] if str(row.get('recover_help_url', '')).startswith('https://') else '',
+                'delayed': row.get('limitation_action_type') == 'LIMIT_ACTION_TYPE_DELAY_CONTROL'})
+        limitation = {'functions': _functions(data.get('limited_functions'), data.get('other_limited_functions')),
+                      'reasons': reasons}
+    except WechatError as exc:
+        error = str(exc)
+        if exc.code == 'INVALID_REQUEST': error += '（渠道号须为普通服务商且与该商户存在受理关系）'
     return render(request, 'desk/merchant_risk.html', {**context(merchant), 'limitation': limitation,
-        'error': error, 'records': merchant_violations(merchant)[:50]})
+        'error': error, 'queried_at': queried_at, 'records': merchant_violations(merchant)[:50]})
 
 
 @login_required
