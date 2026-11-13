@@ -60,12 +60,14 @@ class Merchant(models.Model):
     secondary_key_path = models.CharField('备用验签文件', max_length=512, blank=True)
     notify_url = models.URLField('公网 HTTPS 回调地址', max_length=512, blank=True)
     allowed_jump_hosts = models.CharField('允许回复链接的域名', max_length=512, blank=True)
+    sort_order = models.PositiveIntegerField('排序号', null=True, blank=True)
     last_synced_at = models.DateTimeField(null=True, blank=True)
     last_sync_error = models.CharField(max_length=240, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        ordering = ['id']
+        # 排序号小的在前；未填排序号的排在最后，按添加先后。
+        ordering = [models.F('sort_order').asc(nulls_last=True), 'id']
         verbose_name = '商户'
         verbose_name_plural = '商户'
         constraints = [models.CheckConstraint(condition=(

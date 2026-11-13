@@ -66,7 +66,7 @@ class MerchantCredentialUploadTests(TestCase):
 
     def edit_data(self, merchant, **changes):
         return {**{name: getattr(merchant, name) for name in MerchantForm.Meta.fields if name != 'api_v3_key_input'},
-                'channel': merchant.channel_id or '', 'api_v3_key_input': '', **changes}
+                'channel': merchant.channel_id or '', 'sort_order': merchant.sort_order or '', 'api_v3_key_input': '', **changes}
 
     def test_merchant_multipart_save_uses_restricted_storage_and_encrypted_key(self):
         with patch('httpx.Client.send') as send:

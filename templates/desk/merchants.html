@@ -2,16 +2,16 @@
 {% block content %}
 <div class="page-heading"><h1>商户号管理</h1>{% if perms.desk.add_merchant %}<a class="primary" href="{% url 'merchant_new' %}">＋ 新增商户</a>{% endif %}</div>
 {% include 'desk/management_tabs.html' %}
-<form class="searchbar" method="get"><input name="q" value="{{ query }}" placeholder="商户名称或商户号" aria-label="查找商户"><button class="button">查询</button></form>
+<form class="searchbar" method="get"><input name="q" value="{{ query }}" placeholder="商户名称或商户号" aria-label="查找商户"><button class="button">查询</button>{% if sortable %}<span class="muted sort-hint">按住行左侧 ⠿ 拖动，可调整左侧商户号的显示顺序</span>{% elif query and perms.desk.change_merchant %}<span class="muted sort-hint">清空查询条件后可拖动排序</span>{% endif %}</form>
 <div class="panel table-wrap"><table>
-  <thead><tr><th>商户名称</th><th>微信商户号 / 子商户号</th><th>接入方式</th><th>所属渠道</th><th>同步状态</th><th>最近成功同步</th><th>操作</th></tr></thead>
-  <tbody>{% for row in rows %}<tr>
-    <td><b>{{ row.name }}</b>{% if row.is_demo %}<span class="badge amber">演示</span>{% endif %}{% if row.provider_merchant_id %}<small class="merchant-provider-id mono">{{ row.provider_merchant_id }}</small>{% endif %}</td>
+  <thead><tr>{% if sortable %}<th class="sort-col" aria-label="拖动排序"></th>{% endif %}<th>商户名称</th><th>微信商户号 / 子商户号</th><th>接入方式</th><th>所属渠道</th><th>同步状态</th><th>最近成功同步</th><th>操作</th></tr></thead>
+  <tbody{% if sortable %} data-sortable="{% url 'merchant_reorder' %}" data-csrf="{{ csrf_token }}"{% endif %}>{% for row in rows %}<tr{% if sortable %} data-id="{{ row.id }}" draggable="true"{% endif %}>
+    {% if sortable %}<td class="sort-col drag-handle" title="按住拖动调整顺序">⠿</td>{% endif %}<td><b>{{ row.name }}</b>{% if row.is_demo %}<span class="badge amber">演示</span>{% endif %}{% if row.provider_merchant_id %}<small class="merchant-provider-id mono">{{ row.provider_merchant_id }}</small>{% endif %}</td>
     <td class="mono">{{ row.mch_id }}</td><td>{{ row.get_access_mode_display }}</td>
     <td>{% if row.channel_id %}{{ row.channel.name }}{% if row.channel.provider %}<small class="merchant-provider-id">{{ row.channel.provider }}</small>{% endif %}{% else %}<span class="muted">—</span>{% endif %}</td>
     <td>{% if row.enabled %}<span class="status-dot"></span> 已启用{% else %}<span class="muted">已停用</span>{% endif %}</td>
     <td>{{ row.last_synced_at|date:'Y-m-d H:i'|default:'尚未同步' }}</td>
     <td class="table-actions"><a href="{% url 'workspace' row.id %}">查看投诉</a>{% if perms.desk.change_merchant %}<a href="{% url 'merchant_edit' row.id %}">编辑</a>{% endif %}{% if perms.desk.delete_merchant %}<a class="danger-text" href="{% url 'merchant_delete' row.id %}">删除</a>{% endif %}</td>
-  </tr>{% empty %}<tr><td colspan="7" class="empty">暂无商户</td></tr>{% endfor %}</tbody>
+  </tr>{% empty %}<tr><td colspan="{% if sortable %}8{% else %}7{% endif %}" class="empty">暂无商户</td></tr>{% endfor %}</tbody>
 </table></div>
 {% endblock %}

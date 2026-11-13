@@ -273,3 +273,11 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {outline: 2px 
 .merchant-config [hidden]{display:none!important}.merchant-provider-id{display:block;margin-top:3px}
 .channel-jobs{margin-top:24px;padding:22px}.channel-job{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)}
 .channel-job small{display:block;overflow-wrap:anywhere}.channel-jobs .config-help{margin:14px 0 0}
+
+/* 商户号拖动排序。 */
+[data-sortable] > [data-id] {cursor: grab}
+[data-sortable] > .dragging {opacity: .45}
+[data-sortable].sort-saving {pointer-events: none; opacity: .7}
+.sort-col {width: 36px; padding-right: 0}
+.drag-handle {color: #94a3b8; font-size: 16px; user-select: none}
+.sort-hint {align-self: center; font-size: 12px}
