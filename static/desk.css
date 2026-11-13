@@ -274,10 +274,24 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {outline: 2px 
 .channel-jobs{margin-top:24px;padding:22px}.channel-job{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)}
 .channel-job small{display:block;overflow-wrap:anywhere}.channel-jobs .config-help{margin:14px 0 0}
 
-/* 商户号拖动排序。 */
-[data-sortable] > [data-id] {cursor: grab}
-[data-sortable] > .dragging {opacity: .45}
-[data-sortable].sort-saving {pointer-events: none; opacity: .7}
+/* 商户号拖动排序：手柄悬停提示、原位置留虚线占位、松手后高亮已保存。 */
+[data-sortable] > [data-id] {cursor: grab; transition: background-color .2s, box-shadow .2s, opacity .2s}
+[data-sortable] > [data-id]:active {cursor: grabbing}
+[data-sortable].sorting > [data-id]:not(.dragging):hover {background: #f8fafc}
+.merchant-nav[data-sortable] > .dragging {opacity: .55; background: var(--pale); border: 1px dashed #93c5fd; box-shadow: none}
+.merchant-nav[data-sortable] > .dragging * {visibility: hidden}
+tbody[data-sortable] > .dragging td {background: var(--pale); color: transparent; border-top: 1px dashed #93c5fd; border-bottom: 1px dashed #93c5fd}
+tbody[data-sortable] > .dragging td * {visibility: hidden}
+tbody[data-sortable] > .dragging .drag-handle {visibility: hidden}
+[data-sortable].sort-saving {cursor: progress}
+[data-sortable] > .sort-pending {opacity: .7}
+.merchant-nav[data-sortable] > .sort-saved, tbody[data-sortable] > .sort-saved td {animation: sort-saved .9s ease-out}
+@keyframes sort-saved {from {background: #dcfce7} to {background: transparent}}
 .sort-col {width: 36px; padding-right: 0}
-.drag-handle {color: #94a3b8; font-size: 16px; user-select: none}
+.drag-handle {color: #94a3b8; font-size: 16px; user-select: none; transition: color .15s}
+tbody[data-sortable] > tr:hover .drag-handle {color: var(--accent)}
 .sort-hint {align-self: center; font-size: 12px}
+@media (prefers-reduced-motion: reduce) {
+  [data-sortable] > [data-id], .drag-handle {transition: none}
+  .merchant-nav[data-sortable] > .sort-saved, tbody[data-sortable] > .sort-saved td {animation: none}
+}
