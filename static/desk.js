@@ -302,6 +302,23 @@ if (chatDetail) {
 }
 
 // 拖动调整商户号顺序：松手后提交完整顺序，失败则恢复原顺序。
+const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+// FLIP：记录位置 → 调整 DOM → 从旧位置平滑移到新位置。
+const animateReorder = (container, change) => {
+  const children = [...container.children].filter(item => item.dataset.id);
+  const before = new Map(children.map(item => [item, item.getBoundingClientRect()]));
+  change();
+  if (reduceMotion.matches) return;
+  children.forEach(item => {
+    const old = before.get(item);
+    const now = item.getBoundingClientRect();
+    const dx = old.left - now.left;
+    const dy = old.top - now.top;
+    if (!dx && !dy) return;
+    item.animate([{transform: `translate(${dx}px, ${dy}px)`}, {transform: 'translate(0, 0)'}],
+      {duration: 180, easing: 'cubic-bezier(.2, .8, .2, 1)'});
+  });
+};
 document.querySelectorAll('[data-sortable]').forEach(list => {
   let dragging = null;
   let original = [];
@@ -311,24 +328,33 @@ document.querySelectorAll('[data-sortable]').forEach(list => {
     if (!item || item.parentElement !== list) return;
     dragging = item;
     original = items(list);
-    item.classList.add('dragging');
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', item.dataset.id);
+    // 拖影生成后再切换占位样式，避免拖影也变成半透明虚线框。
+    requestAnimationFrame(() => { if (dragging === item) item.classList.add('dragging'); });
+    list.classList.add('sorting');
   });
   list.addEventListener('dragover', event => {
     if (!dragging) return;
     event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
     const target = event.target.closest && event.target.closest('[data-id]');
     if (!target || target === dragging || target.parentElement !== list) return;
     const rect = target.getBoundingClientRect();
-    const horizontal = getComputedStyle(list).flexDirection === 'row';
+    // 只有横排的弹性布局（手机端侧栏）按左右判断；表格 tbody 的 flex-direction 默认值也是 row，不能只看它。
+    const style = getComputedStyle(list);
+    const horizontal = style.display.includes('flex') && style.flexDirection === 'row';
     const after = horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2;
-    list.insertBefore(dragging, after ? target.nextSibling : target);
+    const reference = after ? target.nextSibling : target;
+    if (reference === dragging || reference === dragging.nextSibling) return;
+    animateReorder(list, () => list.insertBefore(dragging, reference));
   });
   list.addEventListener('drop', event => { if (dragging) event.preventDefault(); });
   list.addEventListener('dragend', async () => {
     if (!dragging) return;
-    dragging.classList.remove('dragging');
+    const moved = dragging;
+    moved.classList.remove('dragging');
+    list.classList.remove('sorting');
     dragging = null;
     const before = original;
     const ids = items(list).map(item => item.dataset.id);
@@ -336,6 +362,7 @@ document.querySelectorAll('[data-sortable]').forEach(list => {
     const body = new URLSearchParams();
     ids.forEach(id => body.append('ids', id));
     list.classList.add('sort-saving');
+    moved.classList.add('sort-pending');
     try {
       const response = await fetch(list.dataset.sortable, {method: 'POST', body, credentials: 'same-origin',
         headers: {'X-CSRFToken': list.dataset.csrf}});
@@ -343,14 +370,18 @@ document.querySelectorAll('[data-sortable]').forEach(list => {
         const data = await response.json().catch(() => ({}));
         throw new Error(data.error || '排序保存失败，请刷新后重试');
       }
-      // 同页的另一个列表（侧栏 / 管理表格）跟着调整。
+      // 同页的另一个列表（侧栏 / 管理表格）跟着平滑调整。
       document.querySelectorAll('[data-sortable]').forEach(other => {
         if (other === list) return;
         const byId = new Map(items(other).map(item => [item.dataset.id, item]));
-        ids.forEach(id => { if (byId.has(id)) other.appendChild(byId.get(id)); });
+        animateReorder(other, () => ids.forEach(id => { if (byId.has(id)) other.appendChild(byId.get(id)); }));
       });
+      moved.classList.remove('sort-pending');
+      moved.classList.add('sort-saved');
+      setTimeout(() => moved.classList.remove('sort-saved'), 900);
     } catch (error) {
-      before.forEach(item => list.appendChild(item));
+      moved.classList.remove('sort-pending');
+      animateReorder(list, () => before.forEach(item => list.appendChild(item)));
       alert(error.message);
     } finally {
       list.classList.remove('sort-saving');
