@@ -5,7 +5,7 @@ from urllib.parse import urlsplit
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required, permission_required
 from django.core.paginator import Paginator
-from django.db import DatabaseError
+from django.db import DatabaseError, transaction
 from django.db.models import Count, Q
 from django.db.models.deletion import ProtectedError
 from django.http import Http404, HttpResponse, JsonResponse
@@ -31,7 +31,9 @@ def recent_pending(prefix=''):
 
 
 def context(merchant=None):
-    merchants = Merchant.objects.annotate(pending=Count('complaints', filter=recent_pending('complaints__')))
+    # 带聚合的查询不会套用模型默认排序，需显式指定，侧栏才按排序号显示。
+    merchants = Merchant.objects.annotate(pending=Count('complaints', filter=recent_pending('complaints__'))) \
+        .order_by(*Merchant._meta.ordering)
     return {'merchants': merchants, 'merchant': merchant}
 
 
@@ -108,8 +110,28 @@ def merchant_list(request):
     rows = Merchant.objects.select_related('channel')
     query = request.GET.get('q', '').strip()
     if query: rows = rows.filter(Q(name__icontains=query) | Q(mch_id__icontains=query) | Q(provider_merchant_id__icontains=query))
-    ctx.update(rows=rows, query=query, menu='merchants')
+    ctx.update(rows=rows, query=query, menu='merchants',
+               sortable=not query and request.user.has_perm('desk.change_merchant'))
     return render(request, 'desk/merchants.html', ctx)
+
+
+@login_required
+@require_POST
+@permission_required('desk.change_merchant', raise_exception=True)
+def merchant_reorder(request):
+    # 拖动排序提交完整顺序，按位置重写排序号；列表期间有增删时拒绝，避免覆盖成残缺顺序。
+    try:
+        ids = [int(x) for x in request.POST.getlist('ids')]
+    except ValueError:
+        return JsonResponse({'error': '排序数据无效'}, status=400)
+    with transaction.atomic():
+        merchants = {m.id: m for m in Merchant.objects.select_for_update()}
+        if len(ids) != len(set(ids)) or set(ids) != set(merchants):
+            return JsonResponse({'error': '商户列表已变化，请刷新页面后重新排序'}, status=409)
+        for position, merchant_id in enumerate(ids, 1):
+            merchants[merchant_id].sort_order = position
+        Merchant.objects.bulk_update(merchants.values(), ['sort_order'])
+    return JsonResponse({'ok': True})
 
 
 @login_required

@@ -5,6 +5,7 @@ urlpatterns = [
     path('', views.workspace, name='home'),
     path('merchants/', views.merchant_list, name='merchant_list'),
     path('merchants/new/', views.merchant_edit, name='merchant_new'),
+    path('merchants/reorder/', views.merchant_reorder, name='merchant_reorder'),
     path('channels/', views.channel_list, name='channel_list'),
     path('channels/new/', views.channel_edit, name='channel_new'),
     path('channels/<int:channel_id>/edit/', views.channel_edit, name='channel_edit'),

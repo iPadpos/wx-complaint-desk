@@ -300,3 +300,60 @@ if (chatDetail) {
       stats: JSON.parse(document.getElementById('complaint-stats').textContent)}, location.origin);
   }
 }
+
+// 拖动调整商户号顺序：松手后提交完整顺序，失败则恢复原顺序。
+document.querySelectorAll('[data-sortable]').forEach(list => {
+  let dragging = null;
+  let original = [];
+  const items = container => [...container.children].filter(item => item.dataset.id);
+  list.addEventListener('dragstart', event => {
+    const item = event.target.closest && event.target.closest('[data-id]');
+    if (!item || item.parentElement !== list) return;
+    dragging = item;
+    original = items(list);
+    item.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', item.dataset.id);
+  });
+  list.addEventListener('dragover', event => {
+    if (!dragging) return;
+    event.preventDefault();
+    const target = event.target.closest && event.target.closest('[data-id]');
+    if (!target || target === dragging || target.parentElement !== list) return;
+    const rect = target.getBoundingClientRect();
+    const horizontal = getComputedStyle(list).flexDirection === 'row';
+    const after = horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2;
+    list.insertBefore(dragging, after ? target.nextSibling : target);
+  });
+  list.addEventListener('drop', event => { if (dragging) event.preventDefault(); });
+  list.addEventListener('dragend', async () => {
+    if (!dragging) return;
+    dragging.classList.remove('dragging');
+    dragging = null;
+    const before = original;
+    const ids = items(list).map(item => item.dataset.id);
+    if (ids.join() === before.map(item => item.dataset.id).join()) return;
+    const body = new URLSearchParams();
+    ids.forEach(id => body.append('ids', id));
+    list.classList.add('sort-saving');
+    try {
+      const response = await fetch(list.dataset.sortable, {method: 'POST', body, credentials: 'same-origin',
+        headers: {'X-CSRFToken': list.dataset.csrf}});
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || '排序保存失败，请刷新后重试');
+      }
+      // 同页的另一个列表（侧栏 / 管理表格）跟着调整。
+      document.querySelectorAll('[data-sortable]').forEach(other => {
+        if (other === list) return;
+        const byId = new Map(items(other).map(item => [item.dataset.id, item]));
+        ids.forEach(id => { if (byId.has(id)) other.appendChild(byId.get(id)); });
+      });
+    } catch (error) {
+      before.forEach(item => list.appendChild(item));
+      alert(error.message);
+    } finally {
+      list.classList.remove('sort-saving');
+    }
+  });
+});

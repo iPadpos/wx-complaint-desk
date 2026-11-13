@@ -109,8 +109,9 @@ class MerchantForm(forms.ModelForm):
         fields = ['name', 'mch_id', 'access_mode', 'channel', 'provider_merchant_id', 'enabled',
                   'serial_no', 'private_key_path', 'api_v3_key_input',
                   'public_key_id', 'public_key_path', 'secondary_key_id', 'secondary_key_path',
-                  'notify_url', 'allowed_jump_hosts']
-        help_texts = {'private_key_path': '服务端绝对路径',
+                  'notify_url', 'allowed_jump_hosts', 'sort_order']
+        help_texts = {'sort_order': '数字小的排在前面；留空排在最后。也可在商户号管理列表拖动排序',
+                      'private_key_path': '服务端绝对路径',
                       'public_key_path': 'PEM 文件',
                       'notify_url': '需在通知配置中注册'}
 

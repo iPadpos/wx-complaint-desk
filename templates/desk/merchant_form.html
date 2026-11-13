@@ -24,6 +24,7 @@
     <section class="config-section">
       <h2>其他配置</h2>
       <div class="form-grid">
+        {% include 'desk/config_field.html' with field=form.sort_order %}
         {% include 'desk/config_field.html' with field=form.allowed_jump_hosts %}
       </div>
     </section>
