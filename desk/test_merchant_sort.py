@@ -29,9 +29,9 @@ class MerchantSortTests(TestCase):
         page = self.client.get('/merchants/').content.decode()
         self.assertLess(page.index('丙商户'), page.index('甲商户'))
         self.assertIn('data-sortable="/merchants/reorder/"', page)
-        self.assertIn('draggable="true"', page)
+        self.assertIn('class="sort-col drag-handle"', page)
         searched = self.client.get('/merchants/', {'q': '甲'}).content.decode()
-        self.assertNotIn('draggable="true"', searched)
+        self.assertNotIn('drag-handle', searched)
 
     def test_reorder_rejects_stale_or_invalid_lists(self):
         self.client.force_login(self.admin)

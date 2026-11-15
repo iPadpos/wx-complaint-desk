@@ -301,8 +301,13 @@ if (chatDetail) {
   }
 }
 
-// 拖动调整商户号顺序：松手后提交完整顺序，失败则恢复原顺序。
+// 拖动调整商户号顺序：按住后卡片浮起跟随指针，其余项平滑让位，松手落回空位并保存；失败则恢复原顺序。
 const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+let sortEndedAt = 0;
+// 拖动松手后浏览器仍会补发一次 click，侧栏是链接，需吞掉以免跳转。
+document.addEventListener('click', event => {
+  if (Date.now() - sortEndedAt < 400) { event.preventDefault(); event.stopPropagation(); }
+}, true);
 // FLIP：记录位置 → 调整 DOM → 从旧位置平滑移到新位置。
 const animateReorder = (container, change) => {
   const children = [...container.children].filter(item => item.dataset.id);
@@ -316,47 +321,100 @@ const animateReorder = (container, change) => {
     const dy = old.top - now.top;
     if (!dx && !dy) return;
     item.animate([{transform: `translate(${dx}px, ${dy}px)`}, {transform: 'translate(0, 0)'}],
-      {duration: 180, easing: 'cubic-bezier(.2, .8, .2, 1)'});
+      {duration: 200, easing: 'cubic-bezier(.2, .8, .2, 1)'});
   });
 };
+const scrollParent = element => {
+  for (let node = element; node && node !== document.body; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if (/(auto|scroll)/.test(style.overflowY + style.overflowX) &&
+        (node.scrollHeight > node.clientHeight || node.scrollWidth > node.clientWidth)) return node;
+  }
+  return document.scrollingElement;
+};
 document.querySelectorAll('[data-sortable]').forEach(list => {
-  let dragging = null;
-  let original = [];
+  const isTable = list.tagName === 'TBODY';
   const items = container => [...container.children].filter(item => item.dataset.id);
-  list.addEventListener('dragstart', event => {
-    const item = event.target.closest && event.target.closest('[data-id]');
-    if (!item || item.parentElement !== list) return;
-    dragging = item;
-    original = items(list);
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', item.dataset.id);
-    // 拖影生成后再切换占位样式，避免拖影也变成半透明虚线框。
-    requestAnimationFrame(() => { if (dragging === item) item.classList.add('dragging'); });
-    list.classList.add('sorting');
-  });
-  list.addEventListener('dragover', event => {
-    if (!dragging) return;
-    event.preventDefault();
-    event.dataTransfer.dropEffect = 'move';
-    const target = event.target.closest && event.target.closest('[data-id]');
-    if (!target || target === dragging || target.parentElement !== list) return;
-    const rect = target.getBoundingClientRect();
+  const horizontal = () => {
     // 只有横排的弹性布局（手机端侧栏）按左右判断；表格 tbody 的 flex-direction 默认值也是 row，不能只看它。
     const style = getComputedStyle(list);
-    const horizontal = style.display.includes('flex') && style.flexDirection === 'row';
-    const after = horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2;
-    const reference = after ? target.nextSibling : target;
-    if (reference === dragging || reference === dragging.nextSibling) return;
-    animateReorder(list, () => list.insertBefore(dragging, reference));
-  });
-  list.addEventListener('drop', event => { if (dragging) event.preventDefault(); });
-  list.addEventListener('dragend', async () => {
-    if (!dragging) return;
-    const moved = dragging;
-    moved.classList.remove('dragging');
-    list.classList.remove('sorting');
-    dragging = null;
-    const before = original;
+    return style.display.includes('flex') && style.flexDirection === 'row';
+  };
+  let drag = null;
+  list.addEventListener('dragstart', event => event.preventDefault());
+
+  const makeGhost = (item, rect) => {
+    let ghost;
+    if (isTable) {
+      // 表格行脱离表格会丢失列宽，包一层 table 并逐列固定宽度。
+      ghost = document.createElement('table');
+      const body = document.createElement('tbody');
+      const row = item.cloneNode(true);
+      [...item.children].forEach((cell, index) => { row.children[index].style.width = `${cell.getBoundingClientRect().width}px`; });
+      body.appendChild(row);
+      ghost.appendChild(body);
+    } else {
+      ghost = item.cloneNode(true);
+      ghost.removeAttribute('href');
+    }
+    ghost.classList.add('sort-ghost');
+    ghost.setAttribute('aria-hidden', 'true');
+    Object.assign(ghost.style, {left: `${rect.left}px`, top: `${rect.top}px`, width: `${rect.width}px`, height: `${rect.height}px`});
+    return ghost;
+  };
+  const follow = () => {
+    // 锁定在列表方向上移动，不会拖出表格或侧栏。
+    const dx = horizontal() ? drag.x - drag.startX : 0;
+    const dy = horizontal() ? 0 : drag.y - drag.startY;
+    drag.ghost.style.translate = `${dx}px ${dy}px`;
+  };
+  const reorder = () => {
+    const element = document.elementFromPoint(drag.x, drag.y);
+    const target = element && element.closest('[data-id]');
+    if (!target || target === drag.item || target.parentElement !== list) return;
+    const rect = target.getBoundingClientRect();
+    const targetFirst = target.compareDocumentPosition(drag.item) & Node.DOCUMENT_POSITION_FOLLOWING;
+    const pointer = horizontal() ? drag.x : drag.y;
+    const middle = horizontal() ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+    // 越过目标中线才换位：往前拖看前半段，往后拖看后半段，换位后不会来回抖动。
+    if (targetFirst ? pointer > middle : pointer < middle) return;
+    animateReorder(list, () => list.insertBefore(drag.item, targetFirst ? target : target.nextSibling));
+  };
+  const autoScroll = () => {
+    if (!drag || !drag.started) return;
+    const scroller = drag.scroller;
+    const box = scroller === document.scrollingElement
+      ? {top: 0, bottom: innerHeight, left: 0, right: innerWidth} : scroller.getBoundingClientRect();
+    const edge = 48;
+    const speed = gap => Math.min(18, Math.ceil(gap / 3));
+    let dx = 0;
+    let dy = 0;
+    if (drag.y < box.top + edge) dy = -speed(box.top + edge - drag.y);
+    else if (drag.y > box.bottom - edge) dy = speed(drag.y - box.bottom + edge);
+    if (horizontal()) {
+      if (drag.x < box.left + edge) dx = -speed(box.left + edge - drag.x);
+      else if (drag.x > box.right - edge) dx = speed(drag.x - box.right + edge);
+    }
+    if (dx || dy) { scroller.scrollBy(dx, dy); reorder(); }
+    drag.frame = requestAnimationFrame(autoScroll);
+  };
+  const start = () => {
+    const {item} = drag;
+    const rect = item.getBoundingClientRect();
+    drag.started = true;
+    drag.original = items(list);
+    drag.ghost = makeGhost(item, rect);
+    drag.scroller = scrollParent(list);
+    document.body.appendChild(drag.ghost);
+    item.classList.add('dragging');
+    list.classList.add('sorting');
+    document.documentElement.classList.add('sort-active');
+    follow();
+    requestAnimationFrame(() => drag && drag.ghost && drag.ghost.classList.add('lifted'));
+    drag.frame = requestAnimationFrame(autoScroll);
+    if (drag.touch && navigator.vibrate) navigator.vibrate(8);
+  };
+  const save = async (moved, before) => {
     const ids = items(list).map(item => item.dataset.id);
     if (ids.join() === before.map(item => item.dataset.id).join()) return;
     const body = new URLSearchParams();
@@ -386,5 +444,62 @@ document.querySelectorAll('[data-sortable]').forEach(list => {
     } finally {
       list.classList.remove('sort-saving');
     }
+  };
+  const finish = (cancelled = false) => {
+    const current = drag;
+    drag = null;
+    clearTimeout(current.timer);
+    cancelAnimationFrame(current.frame);
+    if (!current.started) return;
+    sortEndedAt = Date.now();
+    document.documentElement.classList.remove('sort-active');
+    list.classList.remove('sorting');
+    if (cancelled) animateReorder(list, () => current.original.forEach(item => list.appendChild(item)));
+    const {item, ghost} = current;
+    const done = () => {
+      ghost.remove();
+      item.classList.remove('dragging');
+      if (!cancelled) save(item, current.original);
+    };
+    if (reduceMotion.matches) { done(); return; }
+    // 浮起的卡片落回空位后再显示原项。
+    const slot = item.getBoundingClientRect();
+    ghost.classList.remove('lifted');
+    ghost.classList.add('settling');
+    ghost.style.translate = `${slot.left - parseFloat(ghost.style.left)}px ${slot.top - parseFloat(ghost.style.top)}px`;
+    let settled = false;
+    const settle = () => { if (!settled) { settled = true; done(); } };
+    ghost.addEventListener('transitionend', settle, {once: true});
+    setTimeout(settle, 260);
+  };
+
+  list.addEventListener('pointerdown', event => {
+    if (drag || event.button !== 0 || list.classList.contains('sort-saving')) return;
+    const item = event.target.closest('[data-id]');
+    if (!item || item.parentElement !== list) return;
+    if (isTable && !event.target.closest('.drag-handle')) return;
+    const touch = event.pointerType !== 'mouse';
+    drag = {item, touch, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY,
+      x: event.clientX, y: event.clientY, started: false};
+    if (!touch) event.preventDefault();
+    // 侧栏在触屏上要长按才开始，避免和滑动浏览冲突；表格手柄已禁用触摸滚动，可直接拖。
+    else if (!isTable) drag.timer = setTimeout(() => { if (drag && !drag.started) start(); }, 320);
   });
+  window.addEventListener('pointermove', event => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    if (!drag.started) {
+      const distance = Math.hypot(drag.x - drag.startX, drag.y - drag.startY);
+      if (drag.touch && !isTable) { if (distance > 8) finish(); return; }
+      if (distance > 4) start(); else return;
+    }
+    follow();
+    reorder();
+  });
+  window.addEventListener('pointerup', event => { if (drag && event.pointerId === drag.pointerId) finish(); });
+  window.addEventListener('pointercancel', event => { if (drag && event.pointerId === drag.pointerId) finish(true); });
+  window.addEventListener('keydown', event => { if (drag && drag.started && event.key === 'Escape') finish(true); });
+  // 拖动中阻止触屏页面滚动。
+  window.addEventListener('touchmove', event => { if (drag && drag.started) event.preventDefault(); }, {passive: false});
 });
