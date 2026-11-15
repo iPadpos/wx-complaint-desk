@@ -274,24 +274,33 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {outline: 2px 
 .channel-jobs{margin-top:24px;padding:22px}.channel-job{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)}
 .channel-job small{display:block;overflow-wrap:anywhere}.channel-jobs .config-help{margin:14px 0 0}
 
-/* 商户号拖动排序：手柄悬停提示、原位置留虚线占位、松手后高亮已保存。 */
-[data-sortable] > [data-id] {cursor: grab; transition: background-color .2s, box-shadow .2s, opacity .2s}
-[data-sortable] > [data-id]:active {cursor: grabbing}
-[data-sortable].sorting > [data-id]:not(.dragging):hover {background: #f8fafc}
-.merchant-nav[data-sortable] > .dragging {opacity: .55; background: var(--pale); border: 1px dashed #93c5fd; box-shadow: none}
+/* 商户号拖动排序：按住浮起跟随指针，原位置留虚线占位，其余项平滑让位，松手落位后高亮。 */
+.merchant-nav[data-sortable] > [data-id] {cursor: grab; -webkit-touch-callout: none; transition: background-color .2s, opacity .2s}
+tbody[data-sortable] > tr {transition: background-color .2s, opacity .2s}
+html.sort-active, html.sort-active * {cursor: grabbing !important; user-select: none !important}
+.merchant-nav[data-sortable] > .dragging {background: var(--pale); border: 1.5px dashed #93c5fd; box-shadow: inset 0 0 0 4px #f8fbff}
 .merchant-nav[data-sortable] > .dragging * {visibility: hidden}
-tbody[data-sortable] > .dragging td {background: var(--pale); color: transparent; border-top: 1px dashed #93c5fd; border-bottom: 1px dashed #93c5fd}
-tbody[data-sortable] > .dragging td * {visibility: hidden}
-tbody[data-sortable] > .dragging .drag-handle {visibility: hidden}
+tbody[data-sortable] > .dragging td {background: #f5f9ff; border-top: 1.5px dashed #93c5fd; border-bottom: 1.5px dashed #93c5fd}
+tbody[data-sortable] > .dragging td * , tbody[data-sortable] > .dragging .drag-handle {visibility: hidden}
+.sort-ghost {position: fixed; z-index: 1000; margin: 0; pointer-events: none; box-sizing: border-box; background: #fff;
+  border: 1px solid #dbe4f0; border-radius: 10px; box-shadow: 0 1px 2px rgba(15, 23, 42, .06); opacity: .98;
+  transition: scale .18s cubic-bezier(.2, .8, .2, 1), box-shadow .18s ease, border-color .18s ease; will-change: translate}
+.sort-ghost.lifted {scale: 1.03; border-color: #bfdbfe;
+  box-shadow: 0 18px 36px -10px rgba(15, 23, 42, .28), 0 6px 14px -4px rgba(37, 99, 235, .16)}
+.sort-ghost.settling {transition: translate .2s cubic-bezier(.2, .8, .2, 1), scale .2s ease, box-shadow .2s ease}
+a.sort-ghost.merchant-item {display: flex; color: #334155}
+table.sort-ghost {table-layout: fixed; border-collapse: separate; border-spacing: 0; overflow: hidden; font-size: 12px}
+table.sort-ghost td {border-bottom: 0; background: #fff}
+table.sort-ghost .drag-handle {color: var(--accent)}
 [data-sortable].sort-saving {cursor: progress}
 [data-sortable] > .sort-pending {opacity: .7}
 .merchant-nav[data-sortable] > .sort-saved, tbody[data-sortable] > .sort-saved td {animation: sort-saved .9s ease-out}
 @keyframes sort-saved {from {background: #dcfce7} to {background: transparent}}
 .sort-col {width: 36px; padding-right: 0}
-.drag-handle {color: #94a3b8; font-size: 16px; user-select: none; transition: color .15s}
+.drag-handle {color: #94a3b8; font-size: 16px; user-select: none; cursor: grab; touch-action: none; -webkit-touch-callout: none; transition: color .15s}
 tbody[data-sortable] > tr:hover .drag-handle {color: var(--accent)}
 .sort-hint {align-self: center; font-size: 12px}
 @media (prefers-reduced-motion: reduce) {
-  [data-sortable] > [data-id], .drag-handle {transition: none}
+  [data-sortable] > [data-id], .drag-handle, .sort-ghost {transition: none}
   .merchant-nav[data-sortable] > .sort-saved, tbody[data-sortable] > .sort-saved td {animation: none}
 }
